@@ -19,7 +19,6 @@ from pathlib import Path
 
 import typer
 
-from . import __version__
 from .fetcher import (
     ErroConfigPolidez,
     Polidez,
@@ -229,15 +228,6 @@ def status() -> None:
             typer.echo("  (nenhum evento registrado)")
         for evento in reversed(eventos):
             typer.echo(f"  #{evento['id']} {evento['ts']} [{evento['comando']}] {evento['tipo']} {evento['detalhe']}")
-
-
-@app.callback()
-def _raiz(
-    version: bool = typer.Option(False, "--version", help="Exibe a versão e sai."),
-) -> None:
-    if version:
-        typer.echo(f"agente-editais {__version__}")
-        raise typer.Exit()
 
 
 def main() -> None:
