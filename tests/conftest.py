@@ -14,6 +14,8 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
+from agente_editais import fetcher
+
 REPO = Path(__file__).resolve().parents[1]
 CONFIGS_DO_REPO = REPO / "configs"
 
@@ -45,6 +47,12 @@ class _Manipulador(http.server.BaseHTTPRequestHandler):
             }
         )
         caminho = self.path.split("?")[0]
+        absoluto = getattr(self.server, "redirect_absoluto", {}).get(caminho)
+        if absoluto:
+            self.send_response(301)
+            self.send_header("Location", absoluto)
+            self.end_headers()
+            return
         if caminho == "/movido":
             self.send_response(301)
             self.send_header("Location", "/ok")
@@ -74,9 +82,14 @@ class _Manipulador(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def servidor_fake():
-    """HTTP local em porta efêmera; ``registros`` captura método/UA/momento."""
+    """HTTP local em porta efêmera; ``registros`` captura método/UA/momento.
+
+    ``servidor.redirect_absoluto`` mapeia caminho → URL absoluta para simular
+    redirect entre hosts (ex.: 127.0.0.1 → localhost).
+    """
     servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Manipulador)
     servidor.registros = []  # type: ignore[attr-defined]
+    servidor.redirect_absoluto = {}  # type: ignore[attr-defined]
     thread = threading.Thread(target=servidor.serve_forever, daemon=True)
     thread.start()
     try:
@@ -92,13 +105,49 @@ def url_do(servidor: http.server.ThreadingHTTPServer, caminho: str = "/ok") -> s
 
 
 @pytest.fixture
-def porta_morta() -> int:
-    """Porta TCP livre SEM servidor — conexões falham na hora."""
+def criar_servidor_fake():
+    """Fábrica de servidores fake para testes que precisam de VÁRIOS hosts."""
+    criados: list[http.server.ThreadingHTTPServer] = []
+
+    def _criar() -> http.server.ThreadingHTTPServer:
+        servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Manipulador)
+        servidor.registros = []  # type: ignore[attr-defined]
+        servidor.redirect_absoluto = {}  # type: ignore[attr-defined]
+        threading.Thread(target=servidor.serve_forever, daemon=True).start()
+        criados.append(servidor)
+        return servidor
+
+    yield _criar
+    for servidor in criados:
+        servidor.shutdown()
+        servidor.server_close()
+
+
+@pytest.fixture
+def porta_morta():
+    """Porta TCP ocupada SEM serviço escutando — conexões são recusadas na hora.
+
+    O socket permanece ABERTO (bind sem listen) durante todo o teste: isso
+    garante que a porta não seja reutilizada pelo SO no meio do teste
+    (corrida de porta efêmera) e, sem listener, o connect recebe RST —
+    recusa imediata, não timeout.
+    """
     com_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     com_socket.bind(("127.0.0.1", 0))
+    com_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
     porta = com_socket.getsockname()[1]
-    com_socket.close()
-    return porta
+    try:
+        yield porta
+    finally:
+        com_socket.close()
+
+
+@pytest.fixture(autouse=True)
+def estado_polidez_limpo():
+    """Isola o estado global de delay entre testes (_ultimo_pedido_por_host)."""
+    fetcher.reiniciar_estado_polidez()
+    yield
+    fetcher.reiniciar_estado_polidez()
 
 
 @pytest.fixture

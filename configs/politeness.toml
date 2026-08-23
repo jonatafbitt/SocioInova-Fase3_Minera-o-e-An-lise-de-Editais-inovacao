@@ -1,10 +1,14 @@
 # Polidez do fetcher — ÚNICO módulo com I/O de rede (AD-5).
 # Versionado em git (AD-9); cada lote registra o hash das configs usadas.
+#
+# NOTA: o UA declara a intenção de respeitar robots.txt, mas a LEITURA e
+# aplicação de robots.txt entra na Story 2 (crawling) — o probe desta story
+# não faz parsing de robots.
 
 delay_minimo_s = 2.0
 off_peak = "22:00-06:00" # janela interpretada no fuso do HOST
 
-user_agent = "agente-editais/0.1 (pesquisa academica PPGCS/UFBA; coleta responsavel de editais publicos da Rede Federal EPCT para preservacao e analise; respeita robots.txt)"
+user_agent = "agente-editais/0.1 (pesquisa academica PPGCS/UFBA; coleta responsavel de editais publicos da Rede Federal EPCT para preservacao e analise; robots.txt sera respeitado no crawling)"
 
 [probe]
 timeout_s = 10

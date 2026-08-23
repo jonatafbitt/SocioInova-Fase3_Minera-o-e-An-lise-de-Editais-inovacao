@@ -82,7 +82,15 @@ class ErroEngineIncompativel(RuntimeError):
 
 
 class ErroManifestoOcupado(RuntimeError):
-    """Outro processo detém o lock exclusivo do Manifesto no startup (AD-3)."""
+    """Outro processo detém o lock exclusivo do Manifesto (AD-3)."""
+
+
+class ErroAberturaManifesto(RuntimeError):
+    """Falha ao criar/abrir o arquivo do Manifesto."""
+
+
+class ErroSchemaFuturo(RuntimeError):
+    """Manifesto criado por versão do agente mais nova que a atual."""
 
 
 def agora_iso() -> str:
@@ -104,12 +112,17 @@ class Manifesto:
             )
 
         self.caminho = Path(caminho)
-        self.caminho.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(
-            self.caminho,
-            timeout=LOCK_TIMEOUT_MS / 1000,
-            isolation_level=None,
-        )
+        try:
+            self.caminho.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(
+                self.caminho,
+                timeout=LOCK_TIMEOUT_MS / 1000,
+                isolation_level=None,
+            )
+        except (OSError, sqlite3.Error) as exc:
+            raise ErroAberturaManifesto(
+                f"Não foi possível abrir o Manifesto em {self.caminho}: {exc}"
+            ) from exc
         self._conn.row_factory = sqlite3.Row
         try:
             self._conn.execute(f"PRAGMA busy_timeout = {LOCK_TIMEOUT_MS}")
@@ -146,6 +159,13 @@ class Manifesto:
     def _aplicar_migracoes_pendentes(self) -> list[int]:
         linha = self._conn.execute("PRAGMA user_version").fetchone()
         versao_atual = int(linha[0])
+        ultima_conhecida = MIGRACOES[-1][0]
+        if versao_atual > ultima_conhecida:
+            raise ErroSchemaFuturo(
+                f"Manifesto em {self.caminho} tem schema version {versao_atual}, mas este "
+                f"agente só conhece até {ultima_conhecida}: banco mais novo que o agente. "
+                "Atualize o agente antes de usar este Manifesto."
+            )
         aplicadas: list[int] = []
         for numero, declaracoes in MIGRACOES:
             if numero <= versao_atual:
@@ -157,17 +177,27 @@ class Manifesto:
             aplicadas.append(numero)
         return aplicadas
 
+    def _garantir_aberto(self) -> sqlite3.Connection:
+        if getattr(self, "_conn", None) is None:
+            raise RuntimeError("Manifesto fechado: a instância não pode mais ser usada.")
+        return self._conn
+
     # -- escrita -----------------------------------------------------------
 
     def registrar_evento(self, tipo: str, comando: str, detalhe: dict[str, Any] | None = None) -> int:
         """Append-only: única forma de inserir em ``eventos`` (AD-10)."""
-        cursor = self._conn.execute(
+        conn = self._garantir_aberto()
+        try:
+            conteudo = json.dumps(detalhe or {}, ensure_ascii=False, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            conteudo = "{}"
+        cursor = conn.execute(
             "INSERT INTO eventos (ts, comando, tipo, detalhe) VALUES (?, ?, ?, ?)",
             (
                 agora_iso(),
                 comando,
                 tipo,
-                json.dumps(detalhe or {}, ensure_ascii=False, sort_keys=True),
+                conteudo,
             ),
         )
         return int(cursor.lastrowid)
@@ -175,21 +205,35 @@ class Manifesto:
     @contextmanager
     def transacao(self):
         """Unidade de trabalho atômica (AD-3: toda mutação em transação)."""
-        self._conn.execute("BEGIN IMMEDIATE")
+        conn = self._garantir_aberto()
         try:
-            yield self._conn
-        except BaseException:
-            self._conn.execute("ROLLBACK")
+            conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise ErroManifestoOcupado(
+                    "Outro processo está gravando neste Manifesto; a transação foi "
+                    f"recusada pelo lock (AD-3). Detalhe: {exc}"
+                ) from exc
             raise
-        self._conn.execute("COMMIT")
+        confirmada = False
+        try:
+            yield conn
+            conn.execute("COMMIT")
+            confirmada = True
+        finally:
+            if not confirmada:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass  # conexão já sem transação ativa — nada a desfazer
 
     def executar(self, sql: str, parametros: tuple = ()) -> sqlite3.Cursor:
-        return self._conn.execute(sql, parametros)
+        return self._garantir_aberto().execute(sql, parametros)
 
     # -- leitura -----------------------------------------------------------
 
     def consultar(self, sql: str, parametros: tuple = ()) -> list[sqlite3.Row]:
-        return list(self._conn.execute(sql, parametros).fetchall())
+        return list(self._garantir_aberto().execute(sql, parametros).fetchall())
 
     def schema_version(self) -> int:
         return int(self.consultar("PRAGMA user_version")[0][0])

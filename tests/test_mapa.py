@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
+import re
 
 import pytest
 
@@ -17,22 +17,20 @@ from .conftest import CONFIGS_DO_REPO, escrever_mapa, mapa_minimo
 # -- mapa válido -------------------------------------------------------------
 
 
-def test_mapa_shipado_e_valido_com_todas_as_categorias() -> None:
+def test_mapa_shipado_e_valido_cobrindo_as_quatro_categorias() -> None:
     mapa = carregar_mapa(CONFIGS_DO_REPO / "mapa-mestre.toml")
 
-    assert len(mapa.instituicao) == 10
+    # mínimos, não exatos: curadoria pode adicionar IFs sem editar este teste
+    assert len(mapa.instituicao) >= 3
     portais = [portal for inst in mapa.instituicao for portal in inst.portal]
-    assert len(portais) == 12
-    distribuicao = Counter(portal.categoria for portal in portais)
-    assert distribuicao == {
-        "integra": 4,
-        "nit": 2,
-        "prpgi_prppg": 3,
-        "agencia_inovacao": 3,
-    }
+    assert len(portais) >= len(mapa.instituicao)
     assert all(portal.seeds for portal in portais)
+
+    categorias_presentes = {portal.categoria for portal in portais}
+    assert categorias_presentes == {"integra", "nit", "prpgi_prppg", "agencia_inovacao"}
+
     seeds = {seed for _, _, seed in mapa.seeds_unicas()}
-    assert len(seeds) == 12
+    assert len(seeds) == sum(len(portal.seeds) for portal in portais)
 
 
 def test_cli_mapa_validar_exit0_lista_completa_e_registra_eventos(
@@ -46,12 +44,12 @@ def test_cli_mapa_validar_exit0_lista_completa_e_registra_eventos(
         assert sigla in saida
     for categoria in ("integra", "nit", "prpgi_prppg", "agencia_inovacao"):
         assert f"[{categoria}]" in saida
-    assert "12 portais" in saida
+    assert re.search(r"\d+ instituições, \d+ portais, \d+ seeds", saida)
     assert "https://www.ifrr.edu.br/a-instituicao/agencia-de-inovacao" in saida
 
     with Manifesto(configs_reais_no_tmp.manifesto) as manifesto:
-        assert manifesto.contar_instituicoes() == 10
-        assert manifesto.contar_portais() == 12
+        assert manifesto.contar_instituicoes() >= 3
+        assert manifesto.contar_portais() >= 4
         tipos = [linha["tipo"] for linha in manifesto.consultar("SELECT tipo FROM eventos")]
         assert "mapa_sincronizado" in tipos
 
@@ -62,15 +60,74 @@ def test_sincronizacao_e_idempotente_ad1(cli, configs_reais_no_tmp) -> None:
 
     assert primeira.exit_code == 0 and segunda.exit_code == 0
     with Manifesto(configs_reais_no_tmp.manifesto) as manifesto:
-        assert manifesto.contar_portais() == 12
+        portais_depois = manifesto.contar_portais()
+        portais_primeira = int(
+            json.loads(
+                manifesto.consultar(
+                    "SELECT detalhe FROM eventos WHERE tipo='mapa_sincronizado' ORDER BY id"
+                )[0]["detalhe"]
+            )["portais"]
+        )
+        assert portais_depois == portais_primeira
         eventos = manifesto.consultar(
             "SELECT detalhe FROM eventos WHERE tipo = 'mapa_sincronizado' ORDER BY id"
         )
         detalhe_segundo = json.loads(eventos[-1]["detalhe"])
         assert detalhe_segundo["portais_criados"] == []
-        assert detalhe_segundo["portais"] == 12
+        assert detalhe_segundo["portais"] == portais_primeira
         assert detalhe_segundo["mapa_sha256"] == hash_arquivo(
             configs_reais_no_tmp.configs / "mapa-mestre.toml"
+        )
+
+
+def test_sync_update_branch_grava_novo_valor_e_lista_atualizados(cli, configs_reais_no_tmp) -> None:
+    assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
+
+    caminho_mapa = configs_reais_no_tmp.configs / "mapa-mestre.toml"
+    alterado = caminho_mapa.read_text(encoding="utf-8").replace(
+        'nome = "Integra IFBA"', 'nome = "Integra IFBA (Portal de Editais)"'
+    )
+    caminho_mapa.write_text(alterado, encoding="utf-8")
+
+    segunda = cli.invoke(app, ["mapa", "validar"])
+    assert segunda.exit_code == 0
+    assert "1 atualizados" in segunda.output
+
+    with Manifesto(configs_reais_no_tmp.manifesto) as manifesto:
+        linha = manifesto.consultar(
+            "SELECT nome FROM portais WHERE url = 'https://integra.ifba.edu.br'"
+        )[0]
+        assert linha["nome"] == "Integra IFBA (Portal de Editais)"
+        detalhe_segundo = json.loads(
+            manifesto.consultar(
+                "SELECT detalhe FROM eventos WHERE tipo='mapa_sincronizado' ORDER BY id DESC"
+            )[0]["detalhe"]
+        )
+        assert "https://integra.ifba.edu.br" in detalhe_segundo["portais_atualizados"]
+
+
+def test_sync_reencontra_instituicao_por_sigla_nocase(cli, configs_reais_no_tmp) -> None:
+    """Sigla com caixa diferente deve atualizar a MESMA linha, não duplicar."""
+    assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
+
+    caminho_mapa = configs_reais_no_tmp.configs / "mapa-mestre.toml"
+    original = caminho_mapa.read_text(encoding="utf-8")
+    caminho_mapa.write_text(original.replace('sigla = "IFRR"', 'sigla = "ifrr"'), encoding="utf-8")
+
+    segunda = cli.invoke(app, ["mapa", "validar"])
+    assert segunda.exit_code == 0
+
+    with Manifesto(configs_reais_no_tmp.manifesto) as manifesto:
+        linhas = manifesto.consultar("SELECT sigla FROM instituicoes")
+        correspondencias = [linha["sigla"] for linha in linhas if linha["sigla"].upper() == "IFRR"]
+        assert len(correspondencias) == 1, "mesma sigla em outra caixa não deve duplicar linha"
+        detalhe_segundo = json.loads(
+            manifesto.consultar(
+                "SELECT detalhe FROM eventos WHERE tipo='mapa_sincronizado' ORDER BY id DESC"
+            )[0]["detalhe"]
+        )
+        assert detalhe_segundo["instituicoes_criadas"] == [], (
+            "sync com caixa diferente deve reencontrar a instituição existente"
         )
 
 
@@ -185,6 +242,21 @@ def test_normalizar_url_minusculas_fragment_utm(bruta: str, esperada: str) -> No
     assert normalizar_url(bruta) == esperada
 
 
+@pytest.mark.parametrize(
+    ("bruta", "esperada"),
+    [
+        ("http://a.org:80/x", "http://a.org/x"),
+        ("https://a.org:443/x", "https://a.org/x"),
+        ("http://a.org:8080/x", "http://a.org:8080/x"),
+        ("https://A.ORG:443", "https://a.org"),
+        # parse_qsl decodifica; urlencode recodifica — sem % crus indevidos
+        ("https://a.org/b?titulo=Edital%20n%C2%BA%201&x=%2B", "https://a.org/b?titulo=Edital+n%C2%BA+1&x=%2B"),
+    ],
+)
+def test_normalizar_url_portas_default_e_query_recodificada(bruta: str, esperada: str) -> None:
+    assert normalizar_url(bruta) == esperada
+
+
 @pytest.mark.parametrize("ruim", ["ftp://a.org/x", "//sem-esquema.org", "apenas-texto"])
 def test_normalizar_url_recusa_esquema_invalido(ruim: str) -> None:
     with pytest.raises(ValueError):
@@ -202,3 +274,36 @@ def test_seeds_duplicadas_apos_normalizacao_sao_recusadas(ambiente) -> None:
     with pytest.raises(ErroMapa) as excinfo:
         carregar_mapa(ambiente.configs / "mapa-mestre.toml")
     assert any("repetida" in problema for problema in excinfo.value.problemas)
+
+
+def test_seed_em_multiplos_portais_e_recusada_nomeando_os_dois(ambiente) -> None:
+    seed_comum = "http://comum.org/editais"
+    escrever_mapa(
+        ambiente,
+        mapa_minimo(sigla="AAA", portal="P1", url_portal="http://aaa.org", seeds=[seed_comum])
+        + "\n"
+        + mapa_minimo(
+            sigla="BBB",
+            portal="P2",
+            categoria="nit",
+            url_portal="http://bbb.org",
+            seeds=[seed_comum],
+        ),
+    )
+    with pytest.raises(ErroMapa) as excinfo:
+        carregar_mapa(ambiente.configs / "mapa-mestre.toml")
+    problema = next(p for p in excinfo.value.problemas if "múltiplos portais" in p)
+    assert seed_comum in problema
+    assert "AAA" in problema and "BBB" in problema
+
+
+def test_leitura_de_arquivo_ilegivel_vira_erro_mapa(ambiente) -> None:
+    caminho = ambiente.configs / "mapa-mestre.toml"
+    caminho.write_bytes(b"\xff\xfe\x00nao-e-utf8")
+    with pytest.raises(ErroMapa):
+        carregar_mapa(caminho)
+
+
+def test_hash_de_arquivo_ausente_vira_erro_mapa(tmp_path) -> None:
+    with pytest.raises(ErroMapa):
+        hash_arquivo(tmp_path / "inexistente.toml")

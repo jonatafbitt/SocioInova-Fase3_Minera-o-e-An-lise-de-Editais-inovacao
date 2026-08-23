@@ -16,7 +16,7 @@ import hashlib
 import re
 import tomllib
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -34,22 +34,37 @@ class ErroMapa(ValueError):
         super().__init__("\n".join(problemas))
 
 
+_PORTAS_DEFAULT = {"http": 80, "https": 443}
+
+
 def normalizar_url(url: str) -> str:
-    """Identidade de URL por AD-8: esquema/host lowercase, sem fragment, sem utm_*."""
+    """Identidade de URL por AD-8: esquema/host lowercase, sem fragment,
+    sem utm_*, sem porta default (http 80 / https 443); query re-codificada."""
     texto = url.strip()
     partes = urlsplit(texto)
     esquema = partes.scheme.lower()
     if esquema not in ("http", "https"):
         raise ValueError(f"esquema inválido ('{esquema or 'ausente'}') — esperado http(s): {url!r}")
-    if not partes.netloc:
+    hostname = partes.hostname
+    if not partes.netloc or not hostname:
         raise ValueError(f"URL sem host: {url!r}")
+    porta = partes.port  # ValueError se porta inválida — propagada como recusa
+    if porta is not None and porta != _PORTAS_DEFAULT.get(esquema):
+        netloc = f"{hostname.lower()}:{porta}"
+    else:
+        netloc = hostname.lower()
     pares = [
         (chave, valor)
         for chave, valor in parse_qsl(partes.query, keep_blank_values=True)
         if not chave.lower().startswith("utm_")
     ]
-    consulta = "&".join(f"{chave}={valor}" for chave, valor in pares)
-    return f"{esquema}://{partes.netloc.lower()}{partes.path}{('?'+consulta) if consulta else ''}"
+    consulta = urlencode(pares) if pares else ""
+    return urlunsplit((esquema, netloc, partes.path, consulta, ""))
+
+
+def hostname_de(url: str) -> str:
+    """Hostname (sem porta) — chave dos registros de polidez."""
+    return (urlparse(url).hostname or "").lower()
 
 
 class Portal(BaseModel):
@@ -192,6 +207,22 @@ def _validacoes_semanticas(mapa: MapaMestre, texto_bruto: str, caminho: Path) ->
                 else:
                     vistas[seed] = k
 
+    seeds_por_portal: dict[str, list[str]] = {}
+    for i, instituicao in enumerate(mapa.instituicao):
+        for j, portal in enumerate(instituicao.portal):
+            rotulo = f"{instituicao.sigla}/instituicao[{i}].portal[{j}] ('{portal.nome}')"
+            for seed in portal.seeds:
+                seeds_por_portal.setdefault(seed, []).append(rotulo)
+    for seed, portais_com_a_seed in sorted(seeds_por_portal.items()):
+        if len(portais_com_a_seed) > 1:
+            linhas = _linhas_do_valor(texto_bruto, seed)
+            onde = f", linha(s) {_linhas_formatadas(linhas)}" if linhas else ""
+            problemas.append(
+                f"{caminho}{onde}: seed '{seed}' declarada em múltiplos portais — "
+                + " vs ".join(portais_com_a_seed)
+                + "; cada seed deve pertencer a um único portal."
+            )
+
     if problemas:
         raise ErroMapa(problemas)
 
@@ -205,7 +236,7 @@ def carregar_mapa(caminho: Path) -> MapaMestre:
     caminho = Path(caminho)
     try:
         texto_bruto = caminho.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ErroMapa([f"{caminho}: não foi possível ler o arquivo ({exc})."]) from exc
 
     try:
@@ -241,7 +272,11 @@ def carregar_mapa(caminho: Path) -> MapaMestre:
 
 def hash_arquivo(caminho: Path) -> str:
     """SHA-256 do arquivo de config — registrado em eventos (AD-9)."""
-    return hashlib.sha256(Path(caminho).read_bytes()).hexdigest()
+    try:
+        conteudo = Path(caminho).read_bytes()
+    except OSError as exc:
+        raise ErroMapa([f"{caminho}: não foi possível calcular o hash ({exc})."]) from exc
+    return hashlib.sha256(conteudo).hexdigest()
 
 
 # -- sincronização ----------------------------------------------------------
@@ -257,7 +292,7 @@ def sincronizar_mapa(mapa: MapaMestre, manifesto: Manifesto, *, comando: str, ha
     with manifesto.transacao() as conn:
         for instituicao in mapa.instituicao:
             existente = conn.execute(
-                "SELECT id FROM instituicoes WHERE sigla = ?",
+                "SELECT id, nome FROM instituicoes WHERE sigla = ? COLLATE NOCASE",
                 (instituicao.sigla,),
             ).fetchone()
             if existente is None:
@@ -265,16 +300,25 @@ def sincronizar_mapa(mapa: MapaMestre, manifesto: Manifesto, *, comando: str, ha
                     "INSERT INTO instituicoes (sigla, nome, criado_em) VALUES (?, ?, ?)",
                     (instituicao.sigla, instituicao.nome, agora),
                 )
+                id_instituicao = conn.execute(
+                    "SELECT id FROM instituicoes WHERE sigla = ? COLLATE NOCASE",
+                    (instituicao.sigla,),
+                ).fetchone()["id"]
                 instituicoes_criadas.append(instituicao.sigla)
             else:
-                conn.execute(
-                    "UPDATE instituicoes SET nome = ? WHERE sigla = ?",
-                    (instituicao.nome, instituicao.sigla),
-                )
+                id_instituicao = existente["id"]
+                if existente["nome"] != instituicao.nome:
+                    conn.execute(
+                        "UPDATE instituicoes SET nome = ? WHERE id = ?",
+                        (instituicao.nome, id_instituicao),
+                    )
 
             for portal in instituicao.portal:
                 registro = conn.execute(
-                    "SELECT id FROM portais WHERE url = ?",
+                    """
+                    SELECT instituicao_id, nome, categoria, dinamico, profundidade_maxima
+                    FROM portais WHERE url = ?
+                    """,
                     (portal.url,),
                 ).fetchone()
                 if registro is None:
@@ -283,13 +327,10 @@ def sincronizar_mapa(mapa: MapaMestre, manifesto: Manifesto, *, comando: str, ha
                         INSERT INTO portais (
                             instituicao_id, nome, categoria, url,
                             dinamico, profundidade_maxima, criado_em
-                        ) VALUES (
-                            (SELECT id FROM instituicoes WHERE sigla = ?),
-                            ?, ?, ?, ?, ?, ?
-                        )
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            instituicao.sigla,
+                            id_instituicao,
                             portal.nome,
                             portal.categoria,
                             portal.url,
@@ -300,26 +341,34 @@ def sincronizar_mapa(mapa: MapaMestre, manifesto: Manifesto, *, comando: str, ha
                     )
                     portais_criados.append(portal.url)
                 else:
-                    conn.execute(
-                        """
-                        UPDATE portais SET
-                            instituicao_id = (SELECT id FROM instituicoes WHERE sigla = ?),
-                            nome = ?,
-                            categoria = ?,
-                            dinamico = ?,
-                            profundidade_maxima = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            instituicao.sigla,
-                            portal.nome,
-                            portal.categoria,
-                            int(portal.dinamico),
-                            portal.profundidade_maxima,
-                            registro["id"],
-                        ),
+                    mudou = (
+                        registro["instituicao_id"] != id_instituicao
+                        or registro["nome"] != portal.nome
+                        or registro["categoria"] != portal.categoria
+                        or bool(registro["dinamico"]) != portal.dinamico
+                        or registro["profundidade_maxima"] != portal.profundidade_maxima
                     )
-                    portais_atualizados.append(portal.url)
+                    if mudou:
+                        conn.execute(
+                            """
+                            UPDATE portais SET
+                                instituicao_id = ?,
+                                nome = ?,
+                                categoria = ?,
+                                dinamico = ?,
+                                profundidade_maxima = ?
+                            WHERE url = ?
+                            """,
+                            (
+                                id_instituicao,
+                                portal.nome,
+                                portal.categoria,
+                                int(portal.dinamico),
+                                portal.profundidade_maxima,
+                                portal.url,
+                            ),
+                        )
+                        portais_atualizados.append(portal.url)
 
         manifesto.registrar_evento(
             tipo="mapa_sincronizado",

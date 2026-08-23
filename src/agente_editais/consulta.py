@@ -4,10 +4,13 @@ Subcomandos desta story: ``mapa validar``, ``preflight`` e ``status``.
 
 Códigos de saída:
 - 0  sucesso (inclusive pré-voo com seeds inacessíveis — o lote segue, FR-2);
-- 1  erro operacional genérico (ex.: Manifesto inexistente no ``status``);
-- 2  Mapa-Mestre inválido (nada é escrito — banco intocado);
+- 1  erro operacional genérico: Manifesto inexistente no ``status``,
+     Manifesto mais novo que o agente, falha de abertura do banco ou
+     violação de janela off-peak no pré-voo;
+- 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml
+     e politeness.toml (nada é escrito; banco intocado);
 - 3  engine SQLite abaixo do guard AD-10;
-- 4  Manifesto ocupado por outro processo (lock de startup, AD-3).
+- 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
 """
 
 from __future__ import annotations
@@ -15,21 +18,27 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import typer
 
 from .fetcher import (
     ErroConfigPolidez,
     Polidez,
+    ResultadoSeed,
+    ViolacaoPolidez,
     carregar_polidez,
     dentro_da_janela_off_peak,
-    probe_seed,
+    executar_pre_voo,
 )
 from .manifest import (
     ENGINE_MINIMA,
+    ErroAberturaManifesto,
     ErroEngineIncompativel,
     ErroManifestoOcupado,
+    ErroSchemaFuturo,
     Manifesto,
 )
 from .mapa import (
@@ -80,6 +89,20 @@ def _abrir_manifesto() -> Manifesto:
     except ErroManifestoOcupado as exc:
         typer.echo(f"ERRO: {exc}", err=True)
         raise typer.Exit(code=4) from exc
+    except (ErroAberturaManifesto, ErroSchemaFuturo) as exc:
+        typer.echo(f"ERRO: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@contextmanager
+def uso_manifesto() -> Iterator[Manifesto]:
+    """Abre o Manifesto mapeando lock de gravação (transação) para exit 4."""
+    try:
+        with _abrir_manifesto() as manifesto:
+            yield manifesto
+    except ErroManifestoOcupado as exc:
+        typer.echo(f"ERRO: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
 
 
 def _carregar_mapa_seguro() -> tuple[MapaMestre, Path]:
@@ -124,7 +147,7 @@ def mapa_validar() -> None:
         f"(categorias aceitas: {', '.join(CATEGORIAS)})."
     )
 
-    with _abrir_manifesto() as manifesto:
+    with uso_manifesto() as manifesto:
         resumo = sincronizar_mapa(
             mapa,
             manifesto,
@@ -142,56 +165,90 @@ def mapa_validar() -> None:
 def preflight() -> None:
     """Pré-voo: verifica cada seed VIA fetcher; falhas não abortam o lote."""
     mapa, _ = _carregar_mapa_seguro()
-    polidez, _ = _carregar_polidez_segura()
+    polidez, caminho_polidez = _carregar_polidez_segura()
     pares = mapa.seeds_unicas()
     if not pares:
         typer.echo("Nenhuma seed declarada no Mapa-Mestre.")
         raise typer.Exit(code=2)
 
-    typer.echo(f"Pré-voo de {len(pares)} seeds (delay ≥ {polidez.delay_minimo_s:g}s/host)...")
+    politeness_sha256 = hash_arquivo(caminho_polidez)
+    urls = [url for _, _, url in pares]
+    total = len(pares)
+    typer.echo(f"Pré-voo de {total} seeds (delay ≥ {polidez.delay_minimo_s:g}s/host)...")
+
     acessiveis: list[str] = []
     inacessiveis: list[str] = []
-    off_peak_agora = dentro_da_janela_off_peak(polidez.off_peak)
+    sondadas = 0
+    abortado = False
 
-    with _abrir_manifesto() as manifesto:
-        for indice, (instituicao, portal, _url) in enumerate(pares, start=1):
-            resultado = probe_seed(_url, polidez)
-            if resultado.ok:
-                acessiveis.append(resultado.url)
-                marcador = "[OK   ]"
-                detalhe_extra = f"HTTP {resultado.status_http} via {resultado.metodo}"
-            else:
-                inacessiveis.append(resultado.url)
-                marcador = "[FALHA]"
-                detalhe_extra = str(resultado.erro)
-            typer.echo(
-                f"({indice}/{len(pares)}) {marcador} {resultado.url} "
-                f"[{instituicao.sigla} · {portal.nome}] — {detalhe_extra}"
-            )
-            manifesto.registrar_evento(
-                tipo="seed_acessivel" if resultado.ok else "seed_inacessivel",
-                comando="preflight",
-                detalhe={
-                    "url": resultado.url,
-                    "instituicao": instituicao.sigla,
-                    "portal": portal.nome,
-                    "status_http": resultado.status_http,
-                    "metodo": resultado.metodo,
-                    "erro": resultado.erro,
-                    "duracao_s": round(resultado.duracao_s, 3),
-                    "dentro_janela_off_peak": off_peak_agora,
-                },
-            )
+    try:
+        with uso_manifesto() as manifesto:
 
-        manifesto.registrar_evento(
-            tipo="preflight_concluido",
-            comando="preflight",
-            detalhe={
-                "seeds": len(pares),
-                "acessiveis": len(acessiveis),
-                "inacessiveis": len(inacessiveis),
-            },
-        )
+            def _registrar_seed(
+                indice: int, _total: int, resultado: ResultadoSeed
+            ) -> None:
+                nonlocal sondadas
+                sondadas = indice
+                if resultado.ok:
+                    acessiveis.append(resultado.url)
+                    marcador = "[OK   ]"
+                    detalhe_extra = f"HTTP {resultado.status_http} via {resultado.metodo}"
+                else:
+                    inacessiveis.append(resultado.url)
+                    marcador = "[FALHA]"
+                    detalhe_extra = str(resultado.erro)
+                instituicao, portal = pares[indice - 1][0], pares[indice - 1][1]
+                typer.echo(
+                    f"({indice}/{total}) {marcador} {resultado.url} "
+                    f"[{instituicao.sigla} · {portal.nome}] — {detalhe_extra}"
+                )
+                manifesto.registrar_evento(
+                    tipo="seed_acessivel" if resultado.ok else "seed_inacessivel",
+                    comando="preflight",
+                    detalhe={
+                        "url": resultado.url,
+                        "instituicao": instituicao.sigla,
+                        "portal": portal.nome,
+                        "status_http": resultado.status_http,
+                        "metodo": resultado.metodo,
+                        "erro": resultado.erro,
+                        "duracao_s": round(resultado.duracao_s, 3),
+                        # recalculado POR SEED — pode cruzar a meia-noite no lote
+                        "dentro_janela_off_peak": dentro_da_janela_off_peak(polidez.off_peak),
+                    },
+                )
+
+            try:
+                executar_pre_voo(urls, polidez, informar_progresso=_registrar_seed)
+                manifesto.registrar_evento(
+                    tipo="preflight_concluido",
+                    comando="preflight",
+                    detalhe={
+                        "seeds": total,
+                        "acessiveis": len(acessiveis),
+                        "inacessiveis": len(inacessiveis),
+                        "politeness_sha256": politeness_sha256,
+                    },
+                )
+            finally:
+                if sondadas < total:
+                    abortado = True
+                    try:
+                        manifesto.registrar_evento(
+                            tipo="preflight_abortado",
+                            comando="preflight",
+                            detalhe={
+                                "seeds": total,
+                                "sondadas": sondadas,
+                                "restantes": total - sondadas,
+                                "politeness_sha256": politeness_sha256,
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 — não mascarar a causa original
+                        pass
+    except ViolacaoPolidez as exc:
+        typer.echo(f"ERRO: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
     typer.echo("")
     typer.echo(f"Acessíveis:   {len(acessiveis)}")
@@ -200,6 +257,9 @@ def preflight() -> None:
     typer.echo(f"Inacessíveis: {len(inacessiveis)}")
     for url in inacessiveis:
         typer.echo(f"  - {url}")
+    if abortado:
+        typer.echo("Pré-voo INTERROMPIDO no meio do lote (evento preflight_abortado gravado).")
+        raise typer.Exit(code=1)
     typer.echo("Pré-voo concluído; lote não abortado por falhas de seed (FR-2).")
 
 
@@ -215,7 +275,7 @@ def status() -> None:
         )
         raise typer.Exit(code=1)
 
-    with _abrir_manifesto() as manifesto:
+    with uso_manifesto() as manifesto:
         typer.echo(f"Manifesto:       {caminho}")
         typer.echo(f"SQLite engine:   {sqlite3.sqlite_version} (guard ≥ {'.'.join(map(str, ENGINE_MINIMA))})")
         typer.echo(f"Schema version:  {manifesto.schema_version()}")
