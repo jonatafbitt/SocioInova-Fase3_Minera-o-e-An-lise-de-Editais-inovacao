@@ -13,6 +13,7 @@ campo e linha no TOML.
 from __future__ import annotations
 
 import hashlib
+import re
 import tomllib
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
@@ -118,6 +119,12 @@ def _linhas_com(texto: str, trecho: str) -> list[int]:
     return [n for n, linha in enumerate(texto.splitlines(), start=1) if trecho in linha]
 
 
+def _linhas_do_valor(texto: str, valor: str) -> list[int]:
+    """Localiza o valor como token TOML entre aspas; cai para busca solta."""
+    exatas = [n for n, linha in enumerate(texto.splitlines(), start=1) if f'"{valor}"' in linha]
+    return exatas if exatas else _linhas_com(texto, valor)
+
+
 def _validacoes_semanticas(mapa: MapaMestre, texto_bruto: str, caminho: Path) -> None:
     problemas: list[str] = []
 
@@ -130,7 +137,7 @@ def _validacoes_semanticas(mapa: MapaMestre, texto_bruto: str, caminho: Path) ->
     for i, instituicao in enumerate(mapa.instituicao):
         for j, portal in enumerate(instituicao.portal):
             if portal.categoria not in CATEGORIAS:
-                linhas = _linhas_com(texto_bruto, portal.categoria)
+                linhas = _linhas_do_valor(texto_bruto, portal.categoria)
                 onde = f", linha {_linhas_formatadas(linhas)}" if linhas else ""
                 problemas.append(
                     f"{caminho}{onde}: campo 'instituicao[{i}].portal[{j}].categoria' "
@@ -143,7 +150,10 @@ def _validacoes_semanticas(mapa: MapaMestre, texto_bruto: str, caminho: Path) ->
         chave = instituicao.sigla.upper()
         if chave in vistas_siglas:
             linhas = sorted(
-                {*_linhas_com(texto_bruto, instituicao.sigla), *_linhas_com(texto_bruto, mapa.instituicao[vistas_siglas[chave]].sigla)}
+                {
+                    *_linhas_do_valor(texto_bruto, instituicao.sigla),
+                    *_linhas_do_valor(texto_bruto, mapa.instituicao[vistas_siglas[chave]].sigla),
+                }
             )
             onde = f", linha(s) {_linhas_formatadas(linhas)}" if linhas else ""
             problemas.append(
@@ -158,7 +168,7 @@ def _validacoes_semanticas(mapa: MapaMestre, texto_bruto: str, caminho: Path) ->
     for i, instituicao in enumerate(mapa.instituicao):
         for j, portal in enumerate(instituicao.portal):
             if portal.url in urls_vistas:
-                linhas = _linhas_com(texto_bruto, portal.url)
+                linhas = _linhas_do_valor(texto_bruto, portal.url)
                 onde = f", linha(s) {_linhas_formatadas(linhas)}" if linhas else ""
                 problemas.append(
                     f"{caminho}{onde}: URL '{portal.url}' declarada em dois portais "
@@ -173,7 +183,7 @@ def _validacoes_semanticas(mapa: MapaMestre, texto_bruto: str, caminho: Path) ->
             vistas: dict[str, int] = {}
             for k, seed in enumerate(portal.seeds):
                 if seed in vistas:
-                    linhas = _linhas_com(texto_bruto, seed)
+                    linhas = _linhas_do_valor(texto_bruto, seed)
                     onde = f", linha(s) {_linhas_formatadas(linhas)}" if linhas else ""
                     problemas.append(
                         f"{caminho}{onde}: seed '{seed}' repetida em "
@@ -201,7 +211,10 @@ def carregar_mapa(caminho: Path) -> MapaMestre:
     try:
         dados = tomllib.loads(texto_bruto)
     except tomllib.TOMLDecodeError as exc:
-        raise ErroMapa([f"{caminho}: TOML malformado — {exc}"]) from exc
+        mensagem = str(exc)
+        achou = re.search(r"line (\d+)", mensagem)
+        onde = f", linha {achou.group(1)}" if achou else ""
+        raise ErroMapa([f"{caminho}{onde}: TOML malformado — {mensagem}"]) from exc
 
     try:
         mapa = MapaMestre.model_validate(dados)

@@ -1,0 +1,1 @@
+"""Suite do agente-editais."""
