@@ -1,0 +1,33 @@
+# Dados locais — ficam FORA do git por design (spine §Ambiente operacional):
+# backup = copiar pasta, nunca pelo repositório.
+dados/
+corpus/
+
+# Segredos jamais versionados (spine §Segredos)
+.env
+
+# Artefatos de planejamento/agentes — não são código do produto
+_bmad-output/
+_bmad/
+.agents/
+.opencode/
+.memlog.md
+
+# Notas soltas na raiz
+O intent doc já está denso o bastan.txt
+
+# Python — caches e builds
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# uv.lock é VERSIONADO de propósito (reprodutibilidade — AD-9)
