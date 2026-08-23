@@ -61,10 +61,10 @@ sigla = "IFC"
 nome = "Instituto Federal de Educação, Ciência e Tecnologia Catarinense"
 
   [[instituicao.portal]]
-  nome = "NIT IFC"
+  nome = "Editais IFC — Inovação"
   categoria = "nit"
-  url = "https://nit.ifc.edu.br"
-  seeds = ["https://nit.ifc.edu.br"]
+  url = "https://editais.ifc.edu.br/category/inovacao/"
+  seeds = ["https://editais.ifc.edu.br/category/inovacao/"]
 
 [[instituicao]]
 sigla = "IFMA"
@@ -91,10 +91,10 @@ sigla = "IFES"
 nome = "Instituto Federal de Educação, Ciência e Tecnologia do Espírito Santo"
 
   [[instituicao.portal]]
-  nome = "Agência de Inovação IFES"
+  nome = "Editais ProEx IFES"
   categoria = "agencia_inovacao"
-  url = "https://proex.ifes.edu.br/agencia-de-inovacao"
-  seeds = ["https://proex.ifes.edu.br/agencia-de-inovacao"]
+  url = "https://proex.ifes.edu.br/editais"
+  seeds = ["https://proex.ifes.edu.br/editais"]
 
 [[instituicao]]
 sigla = "IFPR"
@@ -111,7 +111,7 @@ sigla = "IFRR"
 nome = "Instituto Federal de Educação, Ciência e Tecnologia de Roraima"
 
   [[instituicao.portal]]
-  nome = "Agência de Inovação IFRR"
+  nome = "AGIF IFRR"
   categoria = "agencia_inovacao"
-  url = "https://www.ifrr.edu.br/a-instituicao/agencia-de-inovacao"
-  seeds = ["https://www.ifrr.edu.br/a-instituicao/agencia-de-inovacao"]
+  url = "https://www.ifrr.edu.br/a-instituicao/pesquisa/agif/"
+  seeds = ["https://www.ifrr.edu.br/a-instituicao/pesquisa/agif/"]
