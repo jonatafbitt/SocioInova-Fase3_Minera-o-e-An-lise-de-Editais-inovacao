@@ -1,0 +1,117 @@
+# Mapa-Mestre — cadastro curado do CAP-1 (AD-9: versionado em git; alteração exige commit).
+# Estrutura: instituicao[] → portal[] → categoria ∈ {integra, nit, prpgi_prppg, agencia_inovacao} → seeds[]
+# Seeds da ideação (PRD §4.1 / story 1, Code Map). O crawl recusa qualquer portal fora deste cadastro.
+
+schema_version = 1
+
+[[instituicao]]
+sigla = "IFBA"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia da Bahia"
+
+  [[instituicao.portal]]
+  nome = "Integra IFBA"
+  categoria = "integra"
+  url = "https://integra.ifba.edu.br"
+  seeds = ["https://integra.ifba.edu.br"]
+
+  [[instituicao.portal]]
+  nome = "PRPGI IFBA"
+  categoria = "prpgi_prppg"
+  url = "https://portal.ifba.edu.br/prpgi"
+  seeds = ["https://portal.ifba.edu.br/prpgi"]
+
+[[instituicao]]
+sigla = "IFSP"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia de São Paulo"
+
+  [[instituicao.portal]]
+  nome = "Integra IFSP"
+  categoria = "integra"
+  url = "https://integra.ifsp.edu.br"
+  seeds = ["https://integra.ifsp.edu.br"]
+
+  [[instituicao.portal]]
+  nome = "Agência de Inovação IFSP"
+  categoria = "nit"
+  url = "https://inova.ifsp.edu.br"
+  seeds = ["https://inova.ifsp.edu.br"]
+
+[[instituicao]]
+sigla = "IFMS"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia de Mato Grosso do Sul"
+
+  [[instituicao.portal]]
+  nome = "Integra IFMS"
+  categoria = "integra"
+  url = "https://integra.ifms.edu.br"
+  seeds = ["https://integra.ifms.edu.br"]
+
+[[instituicao]]
+sigla = "IFRJ"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia do Rio de Janeiro"
+
+  [[instituicao.portal]]
+  nome = "Integra IFRJ"
+  categoria = "integra"
+  url = "https://integra.ifrj.edu.br"
+  seeds = ["https://integra.ifrj.edu.br"]
+
+[[instituicao]]
+sigla = "IFC"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia Catarinense"
+
+  [[instituicao.portal]]
+  nome = "NIT IFC"
+  categoria = "nit"
+  url = "https://nit.ifc.edu.br"
+  seeds = ["https://nit.ifc.edu.br"]
+
+[[instituicao]]
+sigla = "IFMA"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia do Maranhão"
+
+  [[instituicao.portal]]
+  nome = "PRPGI IFMA"
+  categoria = "prpgi_prppg"
+  url = "https://prpgi.ifma.edu.br"
+  seeds = ["https://prpgi.ifma.edu.br"]
+
+[[instituicao]]
+sigla = "IFPA"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia do Pará"
+
+  [[instituicao.portal]]
+  nome = "PROPPG IFPA"
+  categoria = "prpgi_prppg"
+  url = "https://proppg.ifpa.edu.br"
+  seeds = ["https://proppg.ifpa.edu.br"]
+
+[[instituicao]]
+sigla = "IFES"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia do Espírito Santo"
+
+  [[instituicao.portal]]
+  nome = "Agência de Inovação IFES"
+  categoria = "agencia_inovacao"
+  url = "https://proex.ifes.edu.br/agencia-de-inovacao"
+  seeds = ["https://proex.ifes.edu.br/agencia-de-inovacao"]
+
+[[instituicao]]
+sigla = "IFPR"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia do Paraná"
+
+  [[instituicao.portal]]
+  nome = "AGIF IFPR"
+  categoria = "agencia_inovacao"
+  url = "https://ifpr.edu.br/inovacao/agif"
+  seeds = ["https://ifpr.edu.br/inovacao/agif"]
+
+[[instituicao]]
+sigla = "IFRR"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia de Roraima"
+
+  [[instituicao.portal]]
+  nome = "Agência de Inovação IFRR"
+  categoria = "agencia_inovacao"
+  url = "https://www.ifrr.edu.br/a-instituicao/agencia-de-inovacao"
+  seeds = ["https://www.ifrr.edu.br/a-instituicao/agencia-de-inovacao"]
