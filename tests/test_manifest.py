@@ -11,6 +11,7 @@ import pytest
 from agente_editais.consulta import app
 from agente_editais.manifest import (
     ENGINE_MINIMA,
+    _MIGRACAO_V1,
     ErroAberturaManifesto,
     ErroEngineIncompativel,
     ErroManifestoOcupado,
@@ -52,7 +53,7 @@ def test_engine_no_minimo_passa(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sqlite3, "sqlite_version_info", ENGINE_MINIMA)
     manifesto = Manifesto(tmp_path / "m.sqlite3")
     try:
-        assert manifesto.schema_version() == 1
+        assert manifesto.schema_version() == 2  # v1 + v2 (CAP-2)
     finally:
         manifesto.fechar()
 
@@ -98,7 +99,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
     primeira = Manifesto(caminho)
     try:
         assert primeira.consultar("PRAGMA journal_mode")[0][0] == "wal"
-        assert primeira.schema_version() == 1
+        assert primeira.schema_version() == 2
         objetos = primeira.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         )
@@ -107,12 +108,73 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
 
     segunda = Manifesto(caminho)
     try:
-        assert segunda.schema_version() == 1
+        assert segunda.schema_version() == 2
         assert segunda.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         ) == objetos
     finally:
         segunda.fechar()
+
+
+def test_migracao_v1_para_v2_preserva_dados_e_eh_idempotente(tmp_path) -> None:
+    """Banco criado manualmente em user_version=1 migra intacto para v2."""
+    caminho = tmp_path / "antigo.sqlite3"
+    bruto = sqlite3.connect(caminho)
+    try:
+        for declaracao in _MIGRACAO_V1:
+            bruto.execute(declaracao)
+        bruto.execute(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('VEL', 'Instituição Antiga', '2026-01-01T00:00:00+00:00')"
+        )
+        bruto.execute(
+            """
+            INSERT INTO portais (
+                instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 'Portal Velho', 'integra', 'http://velho.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        bruto.execute("PRAGMA user_version = 1")
+        bruto.commit()
+    finally:
+        bruto.close()
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 2
+        assert manifesto.contar_instituicoes() == 1, "dados v1 preservados"
+        assert manifesto.contar_portais() == 1
+        # tabelas da v2 utilizáveis imediatamente após a migração
+        assert (
+            manifesto.registrar_candidato(1, "http://velho.org/e.pdf", "pdf") is True
+        )
+        assert (
+            manifesto.registrar_secao_visitada(1, "http://velho.org", 0) is True
+        )
+    finally:
+        manifesto.fechar()
+
+    objetos_antes: list | None = None
+    reaberto = Manifesto(caminho)
+    try:
+        assert reaberto.schema_version() == 2  # idempotente
+        objetos_antes = reaberto.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        assert reaberto.contar_candidatos() == 1
+        assert reaberto.contar_secoes_visitadas() == 1
+    finally:
+        reaberto.fechar()
+
+    terceira = Manifesto(caminho)
+    try:
+        assert terceira.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ) == objetos_antes
+    finally:
+        terceira.fechar()
 
 
 # -- eventos append-only (custódia AD-10) ---------------------------------------
@@ -268,9 +330,12 @@ def test_status_happy_path_exit0_com_contagens(cli, configs_reais_no_tmp) -> Non
     assert resultado.exit_code == 0, resultado.output
     saida = resultado.output + (resultado.stderr or "")
     assert "SQLite engine:" in saida
-    assert "Schema version:  1" in saida
+    assert "Schema version:  2" in saida
     assert re.search(r"Instituições:\s+\d+", saida)
     assert re.search(r"Portais:\s+\d+", saida)
+    # contagens da descoberta visíveis no status
+    assert re.search(r"Candidatos:\s+\d+", saida)
+    assert re.search(r"Seções visitadas:\s*\d+", saida)
 
 
 def test_cli_mapa_validar_com_lock_segurado_sai_4(cli, configs_reais_no_tmp) -> None:

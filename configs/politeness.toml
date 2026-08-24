@@ -1,17 +1,27 @@
 # Polidez do fetcher — ÚNICO módulo com I/O de rede (AD-5).
 # Versionado em git (AD-9); cada lote registra o hash das configs usadas.
 #
-# NOTA: o UA declara a intenção de respeitar robots.txt, mas a LEITURA e
-# aplicação de robots.txt entra na Story 2 (crawling) — o probe desta story
-# não faz parsing de robots.
+# NOTA: o UA declara a intenção de respeitar robots.txt; a LEITURA e aplicação
+# de robots.txt por host entrou na Story 2 (fetcher.robots_para_host, §9.1) —
+# violar robots é bug crítico e não tem knob: é sempre honrado.
 
 delay_minimo_s = 2.0
 off_peak = "22:00-06:00" # janela interpretada no fuso do HOST
 
-user_agent = "agente-editais/0.1 (pesquisa academica PPGCS/UFBA; coleta responsavel de editais publicos da Rede Federal EPCT para preservacao e analise; robots.txt sera respeitado no crawling)"
+user_agent = "agente-editais/0.1 (pesquisa academica PPGCS/UFBA; coleta responsavel de editais publicos da Rede Federal EPCT para preservacao e analise; robots.txt respeitado no crawling)"
+
+[crawl]
+# A partir da Story 2 o crawling OBRIGA a janela off-peak (fuso do HOST);
+# fora dela o comando 'descobrir' recusa rodar (exit 1). O probe do pré-voo
+# continua checagem leve e não é afetado por esta chave.
+respeitar_janela_off_peak = true
+# Teto de páginas baixadas POR PORTAL numa execução de 'descobrir' — o BFS
+# para e registra evento quando atinge. Crawl-delay declarado pelo host é
+# honrado além do delay_minimo_s.
+max_paginas_por_portal = 200
 
 [probe]
 timeout_s = 10
 # O probe do pré-voo é checagem leve de alcançabilidade (FR-2), não crawl:
-# a janela off-peak passa a ser obrigatória no crawling (Story 2 em diante).
+# a janela obrigatória do crawling vive na seção [crawl] acima.
 respeitar_janela_off_peak = false

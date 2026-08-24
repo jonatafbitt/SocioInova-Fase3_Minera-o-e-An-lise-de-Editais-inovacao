@@ -7,6 +7,10 @@ Governado por:
 - AD-10: guard de engine ``sqlite_version_info >= (3, 51, 3)`` (correção do
   bug WAL-reset) e custódia via tabela ``eventos`` append-only.
 
+Story 2 adiciona a migração v2 (CAP-2): ``candidatos`` e
+``secoes_visitadas``, ambas com UNIQUE (portal_id, url) para dedupe por URL
+normalizada (AD-8) ser imposto pelo banco, não por memória de processo.
+
 Convenções do spine: placeholders qmark; datas como texto ISO 8601 com
 timezone; tabelas no plural; nenhuma API removida/deprecada do Python 3.14.
 """
@@ -23,7 +27,7 @@ from typing import Any
 ENGINE_MINIMA = (3, 51, 3)
 LOCK_TIMEOUT_MS = 1_500
 
-SCHEMA_VERSAO_ATUAL = 1
+SCHEMA_VERSAO_ATUAL = 2
 
 # Cada declaração é executada isoladamente dentro da transação exclusiva de
 # startup — gatilhos têm ';' no corpo e não podem ser divididos por split.
@@ -74,7 +78,32 @@ _MIGRACAO_V1: tuple[str, ...] = (
     """,
 )
 
-MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = ((1, _MIGRACAO_V1),)
+_MIGRACAO_V2: tuple[str, ...] = (
+    """
+    CREATE TABLE candidatos (
+        id            INTEGER PRIMARY KEY,
+        portal_id     INTEGER NOT NULL REFERENCES portais(id),
+        url           TEXT NOT NULL,
+        tipo          TEXT NOT NULL CHECK (tipo IN ('pdf', 'pagina_edital')),
+        descoberto_em TEXT NOT NULL,
+        UNIQUE (portal_id, url)
+    )
+    """,
+    "CREATE INDEX idx_candidatos_portal ON candidatos(portal_id)",
+    """
+    CREATE TABLE secoes_visitadas (
+        id            INTEGER PRIMARY KEY,
+        portal_id     INTEGER NOT NULL REFERENCES portais(id),
+        url           TEXT NOT NULL,
+        profundidade  INTEGER NOT NULL CHECK (profundidade >= 0),
+        visitado_em   TEXT NOT NULL,
+        UNIQUE (portal_id, url)
+    )
+    """,
+    "CREATE INDEX idx_secoes_visitadas_portal ON secoes_visitadas(portal_id)",
+)
+
+MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = ((1, _MIGRACAO_V1), (2, _MIGRACAO_V2))
 
 
 class ErroEngineIncompativel(RuntimeError):
@@ -248,6 +277,68 @@ class Manifesto:
         return self.consultar(
             "SELECT id, ts, comando, tipo, detalhe FROM eventos ORDER BY id DESC LIMIT ?",
             (limite,),
+        )
+
+    # -- descoberta (CAP-2, migração v2) ------------------------------------
+
+    def id_portal_por_url(self, url: str) -> int | None:
+        """ID do portal cadastrado pela URL normalizada; None se ausente."""
+        linhas = self.consultar("SELECT id FROM portais WHERE url = ?", (url,))
+        return int(linhas[0]["id"]) if linhas else None
+
+    def secao_visitada(self, portal_id: int, url: str) -> bool:
+        """True se a seção já foi registrada — base do 'nunca revisitar'."""
+        return bool(
+            self.consultar(
+                "SELECT 1 FROM secoes_visitadas WHERE portal_id = ? AND url = ?",
+                (portal_id, url),
+            )
+        )
+
+    def registrar_secao_visitada(self, portal_id: int, url: str, profundidade: int) -> bool:
+        """Registra visita de seção (INSERT OR IGNORE); True se foi nova."""
+        conn = self._garantir_aberto()
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO secoes_visitadas (portal_id, url, profundidade, visitado_em)
+            VALUES (?, ?, ?, ?)
+            """,
+            (portal_id, url, profundidade, agora_iso()),
+        )
+        return cursor.rowcount > 0
+
+    def registrar_candidato(self, portal_id: int, url: str, tipo: str) -> bool:
+        """Registra candidato a edital dedupe por UNIQUE(portal_id,url); True se novo.
+
+        Segunda execução sobre o mesmo achado NÃO duplica linha (AD-1/AD-8):
+        o banco, não memória de processo, é a fonte do "já visto".
+        """
+        if tipo not in ("pdf", "pagina_edital"):
+            raise ValueError(f"tipo de candidato inválido: {tipo!r} (esperado pdf|pagina_edital)")
+        conn = self._garantir_aberto()
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO candidatos (portal_id, url, tipo, descoberto_em)
+            VALUES (?, ?, ?, ?)
+            """,
+            (portal_id, url, tipo, agora_iso()),
+        )
+        return cursor.rowcount > 0
+
+    def contar_candidatos(self, portal_id: int | None = None) -> int:
+        if portal_id is None:
+            return int(self.consultar("SELECT COUNT(*) FROM candidatos")[0][0])
+        return int(
+            self.consultar("SELECT COUNT(*) FROM candidatos WHERE portal_id = ?", (portal_id,))[0][0]
+        )
+
+    def contar_secoes_visitadas(self, portal_id: int | None = None) -> int:
+        if portal_id is None:
+            return int(self.consultar("SELECT COUNT(*) FROM secoes_visitadas")[0][0])
+        return int(
+            self.consultar(
+                "SELECT COUNT(*) FROM secoes_visitadas WHERE portal_id = ?", (portal_id,)
+            )[0][0]
         )
 
     # -- ciclo de vida -----------------------------------------------------

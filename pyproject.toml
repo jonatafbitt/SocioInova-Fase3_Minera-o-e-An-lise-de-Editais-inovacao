@@ -6,7 +6,7 @@ authors = [{ name = "Jonatã França Bittencourt" }]
 requires-python = "==3.14.*"
 dependencies = [
     # Stack exato do spine — ver ARCHITECTURE-SPINE.md §Stack
-    "playwright==1.62.0",        # instalado mas NÃO usado nesta story (gatilho é CAP-2)
+    "playwright==1.62.0",        # engine sob demanda (gatilho CAP-2); browsers via `playwright install`
     "requests==2.34.2",
     "beautifulsoup4==4.15.0",
     "lxml>=6.1.0,<6.2",

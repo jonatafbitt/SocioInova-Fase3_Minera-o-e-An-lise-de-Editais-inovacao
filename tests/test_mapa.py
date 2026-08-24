@@ -45,7 +45,8 @@ def test_cli_mapa_validar_exit0_lista_completa_e_registra_eventos(
     for categoria in ("integra", "nit", "prpgi_prppg", "agencia_inovacao"):
         assert f"[{categoria}]" in saida
     assert re.search(r"\d+ instituições, \d+ portais, \d+ seeds", saida)
-    assert "https://www.ifrr.edu.br/a-instituicao/agencia-de-inovacao" in saida
+    # URL corrigida pela curadoria do pré-voo real (commit 38a1b36)
+    assert "https://www.ifrr.edu.br/a-instituicao/pesquisa/agif/" in saida
 
     with Manifesto(configs_reais_no_tmp.manifesto) as manifesto:
         assert manifesto.contar_instituicoes() >= 3

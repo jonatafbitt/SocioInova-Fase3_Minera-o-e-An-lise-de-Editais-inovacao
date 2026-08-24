@@ -1,14 +1,18 @@
 """CLI — superfície do pipeline em lotes (AD-1): um comando por execução.
 
-Subcomandos desta story: ``mapa validar``, ``preflight`` e ``status``.
+Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir`` e
+``status``.
 
 Códigos de saída:
-- 0  sucesso (inclusive pré-voo com seeds inacessíveis — o lote segue, FR-2);
+- 0  sucesso (inclusive pré-voo com seeds inacessíveis e descoberta com
+      falhas por portal — o lote segue, FR-2);
 - 1  erro operacional genérico: Manifesto inexistente no ``status``,
-     Manifesto mais novo que o agente, falha de abertura do banco ou
-     violação de janela off-peak no pré-voo;
+      Manifesto mais novo que o agente, falha de abertura do banco,
+      violação de janela off-peak (pré-voo exigente OU crawling),
+      sigla desconhecida no ``descobrir`` ou portal ausente do Manifesto;
 - 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml
-     e politeness.toml (nada é escrito; banco intocado);
+      e politeness.toml (nada é escrito; banco intocado) — ou flags do
+      ``descobrir`` malformadas (--portal/--todos);
 - 3  engine SQLite abaixo do guard AD-10;
 - 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
 """
@@ -24,6 +28,7 @@ from typing import Iterator
 
 import typer
 
+from .descoberta import ContextoPortal, ResumoPortal, navegar_portal
 from .fetcher import (
     ErroConfigPolidez,
     Polidez,
@@ -32,6 +37,8 @@ from .fetcher import (
     carregar_polidez,
     dentro_da_janela_off_peak,
     executar_pre_voo,
+    nova_sessao,
+    reiniciar_cache_robots,
 )
 from .manifest import (
     ENGINE_MINIMA,
@@ -264,6 +271,167 @@ def preflight() -> None:
 
 
 @app.command()
+def descobrir(
+    portal: str = typer.Option(
+        None,
+        "--portal",
+        help="Sigla da instituição cujos portais serão navegados (ex.: IFBA).",
+    ),
+    todos: bool = typer.Option(False, "--todos", help="Navega todos os portais do Mapa-Mestre."),
+) -> None:
+    """CAP-2: descobre seções e candidatos a edital navegando pelas seeds.
+
+    Rede VIA fetcher com robots.txt mandatório; estático por padrão e
+    Playwright no gatilho (portal dinâmico OU conteúdo ausente). Perdas
+    viram eventos; o lote NUNCA aborta por falha de rede.
+    """
+    if todos == (portal is not None):
+        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
+        raise typer.Exit(code=2)
+    if portal is not None and not portal.strip():
+        # --portal "" (ou só espaços) é flag malformada, não sigla desconhecida
+        typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
+        raise typer.Exit(code=2)
+
+    mapa, caminho_mapa = _carregar_mapa_seguro()
+    polidez, caminho_polidez = _carregar_polidez_segura()
+    reiniciar_cache_robots()  # cache de robots vale POR EXECUÇÃO (§9.1)
+
+    # Regra que estreia na Story 2: crawling OBRIGA a janela off-peak
+    # (fuso do host), conforme politeness.toml ([crawl]) e notas da Story 1.
+    if polidez.crawl_respeitar_janela_off_peak and not dentro_da_janela_off_peak(polidez.off_peak):
+        typer.echo(
+            f"ERRO: fora da janela off-peak ({polidez.off_peak}) no fuso do host; "
+            "crawling recusado pela polidez centralizada (AD-5). O probe do "
+            "'preflight' continua livre — a restrição é do crawling.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, p)
+        for instituicao in mapa.instituicao
+        for p in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+        typer.echo(
+            f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+            f"Siglas conhecidas: {siglas_conhecidas}.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    mapa_sha256 = hash_arquivo(caminho_mapa)
+    politeness_sha256 = hash_arquivo(caminho_polidez)
+
+    resumos: list[ResumoPortal] = []
+    try:
+        with uso_manifesto() as manifesto:
+            contextos: list[ContextoPortal] = []
+            ausentes: list[str] = []
+            for instituicao, p in pares:
+                id_portal = manifesto.id_portal_por_url(p.url)
+                if id_portal is None:
+                    ausentes.append(f"[{instituicao.sigla}] {p.url}")
+                    continue
+                contextos.append(ContextoPortal(instituicao.sigla, p, id_portal))
+            if ausentes:
+                typer.echo(
+                    "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                    f"'agente-editais mapa validar' antes de descobrir: {'; '.join(ausentes)}",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+
+            with nova_sessao(polidez.user_agent) as sessao:
+                for contexto in contextos:
+                    resumos.append(
+                        navegar_portal(contexto, manifesto, polidez, sessao=sessao)
+                    )
+            manifesto.registrar_evento(
+                tipo="descobrir_concluido",
+                comando="descobrir",
+                detalhe={
+                    "portais": len(resumos),
+                    "alvo": "--todos" if todos else alvo,
+                    "mapa_sha256": mapa_sha256,
+                    "politeness_sha256": politeness_sha256,
+                    "totais": {
+                        chave: sum(getattr(resumo, chave) for resumo in resumos)
+                        for chave in (
+                            "secoes_visitadas",
+                            "secoes_ja_conhecidas",
+                            "secoes_falha",
+                            "secoes_excedidas",
+                            "candidatos_novos",
+                            "candidatos_duplicados",
+                            "usos_playwright",
+                            "bloqueios_robots",
+                            "urls_invalidas",
+                            "links_repetidos",
+                            "links_fora_do_portal",
+                            "paginas_baixadas",
+                        )
+                    },
+                    "cortes_por_teto": sum(1 for r in resumos if r.corte_por_teto),
+                    "urls_perdidas": [
+                        url for resumo in resumos for url in resumo.urls_perdidas
+                    ],
+                },
+            )
+    except ViolacaoPolidez as exc:
+        typer.echo(f"ERRO: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    for resumo in resumos:
+        typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+        typer.echo(
+            f"  Seções:     {resumo.secoes_visitadas} visitadas, "
+            f"{resumo.secoes_ja_conhecidas} já conhecidas (nunca revisitam), "
+            f"{resumo.secoes_falha} falhas"
+        )
+        typer.echo(
+            f"  Candidatos: {resumo.candidatos_novos} novos, "
+            f"{resumo.candidatos_duplicados} duplicados ignorados"
+        )
+        gatilhos = ", ".join(
+            f"{nome}={contagem}" for nome, contagem in resumo.gatilhos_playwright.items()
+        )
+        typer.echo(f"  Playwright: {resumo.usos_playwright} uso(s) ({gatilhos})")
+        linha_robots = f"  robots.txt: {resumo.bloqueios_robots} bloqueio(s)"
+        if resumo.robots_inacessivel:
+            linha_robots += "; inacessível — permitido com evento"
+        typer.echo(linha_robots)
+        notas = (
+            f"  Notas:      {resumo.links_repetidos} repetidos, "
+            f"{resumo.links_fora_do_portal} fora do portal, "
+            f"{resumo.secoes_excedidas} além da profundidade, "
+            f"{resumo.urls_invalidas} URLs inválidas, "
+            f"{resumo.paginas_baixadas}/{polidez.max_paginas_por_portal} páginas"
+        )
+        if resumo.corte_por_teto:
+            notas += " [TETO ATINGIDO]"
+        typer.echo(notas)
+        for perdida in resumo.urls_perdidas:
+            typer.echo(f"  Perdida:    {perdida}")
+
+    totais = {
+        chave: sum(getattr(resumo, chave) for resumo in resumos)
+        for chave in ("secoes_visitadas", "candidatos_novos")
+    }
+    typer.echo("")
+    typer.echo(
+        f"Descoberta concluída: {len(resumos)} portal(is), "
+        f"{totais['secoes_visitadas']} seções visitadas, "
+        f"{totais['candidatos_novos']} candidatos novos "
+        "(eventos no Manifesto; lote não abortado por falhas)."
+    )
+
+
+@app.command()
 def status() -> None:
     """Resumo do Manifesto: engine, schema, contagens e últimos eventos."""
     caminho = _caminho_manifesto()
@@ -281,6 +449,8 @@ def status() -> None:
         typer.echo(f"Schema version:  {manifesto.schema_version()}")
         typer.echo(f"Instituições:    {manifesto.contar_instituicoes()}")
         typer.echo(f"Portais:         {manifesto.contar_portais()}")
+        typer.echo(f"Candidatos:      {manifesto.contar_candidatos()}")
+        typer.echo(f"Seções visitadas:{manifesto.contar_secoes_visitadas()}")
         typer.echo("")
         typer.echo("Últimos eventos:")
         eventos = manifesto.ultimos_eventos(limite=10)

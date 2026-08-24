@@ -4,8 +4,10 @@ convenção §Testes do spine) e fixtures de ambiente isolado."""
 from __future__ import annotations
 
 import http.server
+import logging
 import shutil
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -16,6 +18,8 @@ from typer.testing import CliRunner
 
 from agente_editais import fetcher
 
+logger = logging.getLogger(__name__)
+
 REPO = Path(__file__).resolve().parents[1]
 CONFIGS_DO_REPO = REPO / "configs"
 
@@ -25,10 +29,47 @@ delay_minimo_s = 0.0
 off_peak = "22:00-06:00"
 user_agent = "agente-editais-testes/0.1 (+suite pytest; finalidade academica)"
 
+[crawl]
+# suite roda a qualquer hora — janela do crawling desligada NOS TESTES
+respeitar_janela_off_peak = false
+
 [probe]
 timeout_s = 5
 respeitar_janela_off_peak = false
 """
+
+
+class ServidorFalso(http.server.ThreadingHTTPServer):
+    """ThreadingHTTPServer com knobs de conteúdo para os cenários da story.
+
+    Atributos configuráveis por teste:
+    - ``paginas``: caminho → (status, content_type, corpo) — páginas de teste;
+    - ``robots_txt``: corpo de /robots.txt (None ⇒ cai no fluxo padrão);
+    - ``aborts_conexao``: caminhos que derrubam a conexão SEM resposta
+      (simula rede morrendo no meio da navegação);
+    - ``registros``: cada requisição recebida (método/UA/momento/caminho) —
+      prova de que um caminho NÃO foi requisitado (bloqueio robots) ou de
+      quantas vezes foi (cache, dedupe).
+    """
+
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.registros: list[dict] = []
+        self.redirect_absoluto: dict[str, str] = {}
+        self.paginas: dict[str, tuple[int, str, object]] = {}
+        self.robots_txt: str | None = None
+        self.aborts_conexao: set[str] = set()
+
+    def handle_error(self, request, client_address) -> None:
+        # conexões abortadas DE PROPÓSITO não passam por aqui (fechamos sem
+        # escrever); o que chegar é bug de teste/fixture — logue, não engula
+        logger.warning(
+            "ServidorFalso: exceção não tratada atendendo %s: %s",
+            client_address,
+            sys.exc_info()[1],
+        )
 
 
 class _Manipulador(http.server.BaseHTTPRequestHandler):
@@ -47,6 +88,38 @@ class _Manipulador(http.server.BaseHTTPRequestHandler):
             }
         )
         caminho = self.path.split("?")[0]
+        if caminho in self.server.aborts_conexao:  # type: ignore[attr-defined]
+            # rede "morre": sem resposta HTTP — o cliente vê ConnectionError
+            self.close_connection = True
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.connection.close()
+            return
+        pagina = self.server.paginas.get(caminho)  # type: ignore[attr-defined]
+        if pagina is not None:
+            status, content_type, corpo = pagina
+            if isinstance(corpo, str):
+                corpo = corpo.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(corpo)))
+            self.end_headers()
+            if metodo != "HEAD":
+                self.wfile.write(corpo)
+            return
+        if caminho == "/robots.txt":
+            conteudo = getattr(self.server, "robots_txt", None)
+            if conteudo is not None:
+                corpo = conteudo.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(corpo)))
+                self.end_headers()
+                if metodo != "HEAD":
+                    self.wfile.write(corpo)
+                return
         absoluto = getattr(self.server, "redirect_absoluto", {}).get(caminho)
         if absoluto:
             self.send_response(301)
@@ -80,18 +153,21 @@ class _Manipulador(http.server.BaseHTTPRequestHandler):
         self._responder("GET")
 
 
+def _novo_servidor() -> ServidorFalso:
+    servidor = ServidorFalso(("127.0.0.1", 0), _Manipulador)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    return servidor
+
+
 @pytest.fixture
 def servidor_fake():
     """HTTP local em porta efêmera; ``registros`` captura método/UA/momento.
 
     ``servidor.redirect_absoluto`` mapeia caminho → URL absoluta para simular
-    redirect entre hosts (ex.: 127.0.0.1 → localhost).
+    redirect entre hosts (ex.: 127.0.0.1 → localhost). Veja ``ServidorFalso``
+    para ``paginas``/``robots_txt``/``aborts_conexao``.
     """
-    servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Manipulador)
-    servidor.registros = []  # type: ignore[attr-defined]
-    servidor.redirect_absoluto = {}  # type: ignore[attr-defined]
-    thread = threading.Thread(target=servidor.serve_forever, daemon=True)
-    thread.start()
+    servidor = _novo_servidor()
     try:
         yield servidor
     finally:
@@ -107,13 +183,10 @@ def url_do(servidor: http.server.ThreadingHTTPServer, caminho: str = "/ok") -> s
 @pytest.fixture
 def criar_servidor_fake():
     """Fábrica de servidores fake para testes que precisam de VÁRIOS hosts."""
-    criados: list[http.server.ThreadingHTTPServer] = []
+    criados: list[ServidorFalso] = []
 
-    def _criar() -> http.server.ThreadingHTTPServer:
-        servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Manipulador)
-        servidor.registros = []  # type: ignore[attr-defined]
-        servidor.redirect_absoluto = {}  # type: ignore[attr-defined]
-        threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    def _criar() -> ServidorFalso:
+        servidor = _novo_servidor()
         criados.append(servidor)
         return servidor
 
