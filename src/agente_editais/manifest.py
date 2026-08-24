@@ -404,6 +404,19 @@ class Manifesto:
             )[0][0]
         )
 
+    def limpar_secoes_do_portal(self, portal_id: int) -> int:
+        """Apaga o registro de seções visitadas de UM portal (operação --revisitar).
+
+        Usada quando a curadoria muda o comportamento esperado da navegação
+        (ex.: portal marcado dinamico=true após 1ª rodada estática). O DELETE
+        é registrado como evento pelo chamador — nunca silencioso (AD-10).
+        """
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                "DELETE FROM secoes_visitadas WHERE portal_id = ?", (portal_id,)
+            )
+            return int(cursor.rowcount)
+
     # -- coleta (CAP-4, migração v3) -----------------------------------------
 
     def candidatos_pdf_do_portal(self, portal_id: int) -> list[sqlite3.Row]:

@@ -734,3 +734,42 @@ def test_polidez_configurada_livre_roda_fora_da_janela(
     resultado = cli.invoke(app, ["descobrir", "--todos"])
 
     assert resultado.exit_code == 0, resultado.output
+
+
+def test_revisitar_esquece_secoes_e_navega_de_novo_com_evento(
+    cli, politeness_veloz, servidor_fake
+) -> None:
+    """--revisitar limpa secoes_visitadas do portal (via Manifesto, com evento)."""
+    servidor_fake.paginas["/ok"] = (
+        200,
+        "text/html; charset=utf-8",
+        "<html><body><a href='/inovacao'>Núcleo de INOVAÇÃO</a></body></html>",
+    )
+    servidor_fake.paginas["/inovacao"] = (
+        200,
+        "text/html; charset=utf-8",
+        "<html><body><a href='pdfs/e.pdf'>Edital</a></body></html>",
+    )
+    servidor_fake.paginas["/pdfs/e.pdf"] = (200, "application/pdf", b"%PDF-fake")
+    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
+    assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
+
+    primeira = cli.invoke(app, ["descobrir", "--portal", "TST"])
+    assert primeira.exit_code == 0, primeira.output
+    with Manifesto(politeness_veloz.manifesto) as manifesto:
+        assert manifesto.contar_secoes_visitadas() == 2
+
+    gets_antes = sum(1 for r in servidor_fake.registros if r["metodo"] == "GET")
+
+    revisita = cli.invoke(app, ["descobrir", "--portal", "TST", "--revisitar"])
+
+    assert revisita.exit_code == 0, revisita.output
+    assert "esquecidas" in revisita.output
+    with Manifesto(politeness_veloz.manifesto) as manifesto:
+        # navegação recomeçou: as mesmas 2 seções voltaram ao registro
+        assert manifesto.contar_secoes_visitadas() == 2
+    tipos = [t for t, _ in _tipos_eventos(politeness_veloz.manifesto)]
+    assert "secoes_reiniciadas" in tipos
+
+    gets_depois = sum(1 for r in servidor_fake.registros if r["metodo"] == "GET")
+    assert gets_depois > gets_antes  # houve re-navegação real

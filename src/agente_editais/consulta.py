@@ -286,6 +286,12 @@ def descobrir(
         help="Sigla da instituição cujos portais serão navegados (ex.: IFBA).",
     ),
     todos: bool = typer.Option(False, "--todos", help="Navega todos os portais do Mapa-Mestre."),
+    revisitar: bool = typer.Option(
+        False,
+        "--revisitar",
+        help="Limpa as seções já visitadas do(s) portal(is) alvo antes de navegar "
+        "(use quando a curadoria mudar o comportamento, ex.: dinamico=true).",
+    ),
 ) -> None:
     """CAP-2: descobre seções e candidatos a edital navegando pelas seeds.
 
@@ -353,6 +359,22 @@ def descobrir(
                     err=True,
                 )
                 raise typer.Exit(code=1)
+
+            if revisitar:
+                for contexto in contextos:
+                    removidas = manifesto.limpar_secoes_do_portal(contexto.portal_id)
+                    manifesto.registrar_evento(
+                        tipo="secoes_reiniciadas",
+                        comando="descobrir",
+                        detalhe={
+                            "portal": contexto.portal.url,
+                            "instituicao": contexto.instituicao_sigla,
+                            "secoes_removidas": removidas,
+                        },
+                    )
+                    typer.echo(
+                        f"[{contexto.instituicao_sigla}] {removidas} seção(ões) esquecidas — navegação recomeça do zero."
+                    )
 
             with nova_sessao(polidez.user_agent) as sessao:
                 for contexto in contextos:
