@@ -12,6 +12,7 @@ from agente_editais.consulta import app
 from agente_editais.manifest import (
     ENGINE_MINIMA,
     _MIGRACAO_V1,
+    _MIGRACAO_V2,
     ErroAberturaManifesto,
     ErroEngineIncompativel,
     ErroManifestoOcupado,
@@ -53,7 +54,7 @@ def test_engine_no_minimo_passa(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sqlite3, "sqlite_version_info", ENGINE_MINIMA)
     manifesto = Manifesto(tmp_path / "m.sqlite3")
     try:
-        assert manifesto.schema_version() == 2  # v1 + v2 (CAP-2)
+        assert manifesto.schema_version() == 3  # v1 + v2 (CAP-2) + v3 (CAP-4)
     finally:
         manifesto.fechar()
 
@@ -99,7 +100,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
     primeira = Manifesto(caminho)
     try:
         assert primeira.consultar("PRAGMA journal_mode")[0][0] == "wal"
-        assert primeira.schema_version() == 2
+        assert primeira.schema_version() == 3
         objetos = primeira.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         )
@@ -108,7 +109,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
 
     segunda = Manifesto(caminho)
     try:
-        assert segunda.schema_version() == 2
+        assert segunda.schema_version() == 3
         assert segunda.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         ) == objetos
@@ -116,8 +117,8 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
         segunda.fechar()
 
 
-def test_migracao_v1_para_v2_preserva_dados_e_eh_idempotente(tmp_path) -> None:
-    """Banco criado manualmente em user_version=1 migra intacto para v2."""
+def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> None:
+    """Banco criado manualmente em user_version=1 migra intacto até a versão atual."""
     caminho = tmp_path / "antigo.sqlite3"
     bruto = sqlite3.connect(caminho)
     try:
@@ -143,10 +144,10 @@ def test_migracao_v1_para_v2_preserva_dados_e_eh_idempotente(tmp_path) -> None:
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 2
+        assert manifesto.schema_version() == 3
         assert manifesto.contar_instituicoes() == 1, "dados v1 preservados"
         assert manifesto.contar_portais() == 1
-        # tabelas da v2 utilizáveis imediatamente após a migração
+        # tabelas da v2/v3 utilizáveis imediatamente após a migração
         assert (
             manifesto.registrar_candidato(1, "http://velho.org/e.pdf", "pdf") is True
         )
@@ -159,7 +160,7 @@ def test_migracao_v1_para_v2_preserva_dados_e_eh_idempotente(tmp_path) -> None:
     objetos_antes: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 2  # idempotente
+        assert reaberto.schema_version() == 3  # idempotente
         objetos_antes = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -175,6 +176,110 @@ def test_migracao_v1_para_v2_preserva_dados_e_eh_idempotente(tmp_path) -> None:
         ) == objetos_antes
     finally:
         terceira.fechar()
+
+
+def test_migracao_v2_para_v3_preserva_dados_e_eh_idempotente(tmp_path) -> None:
+    """Banco da Story 2 (v2) abre na v3 com candidatos intactos e v3 utilizável."""
+    caminho = tmp_path / "story2.sqlite3"
+    bruto = sqlite3.connect(caminho)
+    try:
+        for declaracao in (*_MIGRACAO_V1, *_MIGRACAO_V2):
+            bruto.execute(declaracao)
+        bruto.execute(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('S2', 'Instituição Story 2', '2026-01-01T00:00:00+00:00')"
+        )
+        bruto.execute(
+            """
+            INSERT INTO portais (
+                instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 'Portal Antigo', 'integra', 'http://s2.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            "INSERT INTO candidatos (portal_id, url, tipo, descoberto_em) "
+            "VALUES (1, 'http://s2.org/e.pdf', 'pdf', '2026-02-02T00:00:00+00:00')"
+        )
+        bruto.execute("PRAGMA user_version = 2")
+        bruto.commit()
+    finally:
+        bruto.close()
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 3
+        assert manifesto.contar_candidatos() == 1, "candidatos v2 preservados"
+        # v3 utilizável: retomada enxerga o candidato herdado
+        pendentes = manifesto.candidatos_pdf_do_portal(1)
+        assert [linha["url"] for linha in pendentes] == ["http://s2.org/e.pdf"]
+        assert manifesto.ultimo_documento_da_url("http://s2.org/e.pdf") is None
+        assert manifesto.contar_editais() == 0 and manifesto.contar_documentos() == 0
+    finally:
+        manifesto.fechar()
+
+    objetos_v3: list | None = None
+    reaberto = Manifesto(caminho)
+    try:
+        assert reaberto.schema_version() == 3  # idempotente
+        objetos_v3 = reaberto.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        assert reaberto.contar_candidatos() == 1
+    finally:
+        reaberto.fechar()
+
+    terceira = Manifesto(caminho)
+    try:
+        assert terceira.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ) == objetos_v3
+    finally:
+        terceira.fechar()
+
+
+def test_schema_v3_guarda_integridade_de_documentos(tmp_path) -> None:
+    """FK/checks da v3: edital precisa de instituição; ano fora da janela recusa."""
+    manifesto = Manifesto(tmp_path / "m.sqlite3")
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+                VALUES ('x-2023-e', 999, 2023, '2026-01-01T00:00:00+00:00')
+                """
+            )
+        manifesto.executar(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('TST', 'Teste', '2026-01-01T00:00:00+00:00')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+                VALUES ('tst-2018-fora', 1, 2018, '2026-01-01T00:00:00+00:00')
+                """
+            )
+        manifesto.executar(
+            """
+            INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+            VALUES ('tst-2023-e', 1, 2023, '2026-01-01T00:00:00+00:00')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO documentos (
+                    id, edital_id, url_origem, caminho, hash_sha256, data_captura,
+                    ano_provisorio, versao_crawler
+                ) VALUES ('abc123456789', 'fantasma', 'http://x.org/a.pdf',
+                          'corpus/x.pdf', 'h', '2026-01-01T00:00:00+00:00',
+                          2023, '0.1.0')
+                """
+            )
+    finally:
+        manifesto.fechar()
 
 
 # -- eventos append-only (custódia AD-10) ---------------------------------------
@@ -330,7 +435,7 @@ def test_status_happy_path_exit0_com_contagens(cli, configs_reais_no_tmp) -> Non
     assert resultado.exit_code == 0, resultado.output
     saida = resultado.output + (resultado.stderr or "")
     assert "SQLite engine:" in saida
-    assert "Schema version:  2" in saida
+    assert "Schema version:  3" in saida
     assert re.search(r"Instituições:\s+\d+", saida)
     assert re.search(r"Portais:\s+\d+", saida)
     # contagens da descoberta visíveis no status

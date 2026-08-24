@@ -1,18 +1,19 @@
 """CLI — superfície do pipeline em lotes (AD-1): um comando por execução.
 
-Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir`` e
-``status``.
+Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir``,
+``coletar`` e ``status``.
 
 Códigos de saída:
-- 0  sucesso (inclusive pré-voo com seeds inacessíveis e descoberta com
-      falhas por portal — o lote segue, FR-2);
+- 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta e coleta
+       com falhas por portal/URL — o lote segue, FR-2/CAP-4);
 - 1  erro operacional genérico: Manifesto inexistente no ``status``,
-      Manifesto mais novo que o agente, falha de abertura do banco,
-      violação de janela off-peak (pré-voo exigente OU crawling),
-      sigla desconhecida no ``descobrir`` ou portal ausente do Manifesto;
+       Manifesto mais novo que o agente, falha de abertura do banco,
+       violação de janela off-peak (pré-voo exigente OU crawling),
+       sigla desconhecida no ``descobrir``/``coletar`` ou portal ausente
+       do Manifesto;
 - 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml
-      e politeness.toml (nada é escrito; banco intocado) — ou flags do
-      ``descobrir`` malformadas (--portal/--todos);
+       e politeness.toml (nada é escrito; banco intocado) — ou flags de
+       ``descobrir``/``coletar`` malformadas (--portal/--todos);
 - 3  engine SQLite abaixo do guard AD-10;
 - 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
 """
@@ -28,6 +29,7 @@ from typing import Iterator
 
 import typer
 
+from .coleta import ContextoColeta, ResumoColetaPortal, coletar_portal, limpar_temporarios
 from .descoberta import ContextoPortal, ResumoPortal, navegar_portal
 from .fetcher import (
     ErroConfigPolidez,
@@ -38,7 +40,7 @@ from .fetcher import (
     dentro_da_janela_off_peak,
     executar_pre_voo,
     nova_sessao,
-    reiniciar_cache_robots,
+    reiniciar_estado_polidez,
 )
 from .manifest import (
     ENGINE_MINIMA,
@@ -67,6 +69,7 @@ app.add_typer(mapa_app, name="mapa")
 
 ENV_CONFIGS = "AGENTE_EDITAIS_CONFIGS"
 ENV_MANIFESTO = "AGENTE_EDITAIS_MANIFESTO"
+ENV_CORPUS = "AGENTE_EDITAIS_CORPUS"
 
 
 def _raiz_projeto() -> Path:
@@ -85,6 +88,11 @@ def _dir_configs() -> Path:
 def _caminho_manifesto() -> Path:
     override = os.environ.get(ENV_MANIFESTO)
     return Path(override) if override else _raiz_projeto() / "dados" / "manifesto.sqlite3"
+
+
+def _raiz_corpus() -> Path:
+    override = os.environ.get(ENV_CORPUS)
+    return Path(override) if override else _raiz_projeto() / "corpus"
 
 
 def _abrir_manifesto() -> Manifesto:
@@ -295,7 +303,7 @@ def descobrir(
 
     mapa, caminho_mapa = _carregar_mapa_seguro()
     polidez, caminho_polidez = _carregar_polidez_segura()
-    reiniciar_cache_robots()  # cache de robots vale POR EXECUÇÃO (§9.1)
+    reiniciar_estado_polidez()  # estado de polidez vale POR EXECUÇÃO (§9.1)
 
     # Regra que estreia na Story 2: crawling OBRIGA a janela off-peak
     # (fuso do host), conforme politeness.toml ([crawl]) e notas da Story 1.
@@ -432,6 +440,193 @@ def descobrir(
 
 
 @app.command()
+def coletar(
+    portal: str = typer.Option(
+        None,
+        "--portal",
+        help="Sigla da instituição cujos portais serão coletados (ex.: IFBA).",
+    ),
+    todos: bool = typer.Option(False, "--todos", help="Coleta todos os portais do Mapa-Mestre."),
+) -> None:
+    """CAP-4: baixa candidatos PDF com Registro L1 nascido na captura.
+
+    Dedupe por hash intra-portal (alias com referência cruzada), retomada
+    pelo estado no Manifesto (re-execução idempotente), suspensão de host
+    com 403 persistente — o restante DO HOST é pulado, e a suspensão é
+    compartilhada entre os portais da mesma execução —, cap de tamanho:
+    tudo VIA fetcher (AD-5/AD-2/AD-11). Falhas NUNCA abortam o lote;
+    exit 0 mesmo com perdas registradas.
+    """
+    if todos == (portal is not None):
+        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
+        raise typer.Exit(code=2)
+    if portal is not None and not portal.strip():
+        typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
+        raise typer.Exit(code=2)
+
+    mapa, caminho_mapa = _carregar_mapa_seguro()
+    polidez, caminho_polidez = _carregar_polidez_segura()
+    reiniciar_estado_polidez()  # delay/robots/403 começam zerados POR EXECUÇÃO
+
+    if polidez.crawl_respeitar_janela_off_peak and not dentro_da_janela_off_peak(polidez.off_peak):
+        typer.echo(
+            f"ERRO: fora da janela off-peak ({polidez.off_peak}) no fuso do host; "
+            "coleta recusada pela polidez centralizada (AD-5). O probe do "
+            "'preflight' continua livre — a restrição é do crawling.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, p)
+        for instituicao in mapa.instituicao
+        for p in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+        typer.echo(
+            f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+            f"Siglas conhecidas: {siglas_conhecidas}.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    mapa_sha256 = hash_arquivo(caminho_mapa)
+    politeness_sha256 = hash_arquivo(caminho_polidez)
+    raiz_corpus = _raiz_corpus()
+    try:
+        raiz_corpus.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        typer.echo(
+            f"ERRO: não foi possível criar a raiz do corpus em {raiz_corpus}: {exc}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    limpar_temporarios(raiz_corpus)
+
+    resumos: list[ResumoColetaPortal] = []
+    # suspensão de host COMPARTILHADA entre todos os portais desta execução:
+    # host suspenso num portal pula o restante DO HOST nos demais também
+    suspensos_da_execucao: list[str] = []
+    try:
+        with uso_manifesto() as manifesto:
+            contextos: list[ContextoColeta] = []
+            ausentes: list[str] = []
+            for instituicao, p in pares:
+                id_portal = manifesto.id_portal_por_url(p.url)
+                if id_portal is None:
+                    ausentes.append(f"[{instituicao.sigla}] {p.url}")
+                    continue
+                contextos.append(ContextoColeta(instituicao.sigla, p, id_portal))
+            if ausentes:
+                typer.echo(
+                    "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                    f"'agente-editais mapa validar' antes de coletar: {'; '.join(ausentes)}",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+
+            with nova_sessao(polidez.user_agent) as sessao:
+                for contexto in contextos:
+                    resumos.append(
+                        coletar_portal(
+                            contexto,
+                            manifesto,
+                            polidez,
+                            raiz_corpus=raiz_corpus,
+                            comando="coletar",
+                            sessao=sessao,
+                            hosts_suspensos_execucao=suspensos_da_execucao,
+                        )
+                    )
+            manifesto.registrar_evento(
+                tipo="coletar_concluido",
+                comando="coletar",
+                detalhe={
+                    "portais": len(resumos),
+                    "alvo": "--todos" if todos else alvo,
+                    "mapa_sha256": mapa_sha256,
+                    "politeness_sha256": politeness_sha256,
+                    "raiz_corpus": str(raiz_corpus),
+                    "max_mb_documento": polidez.max_mb_documento,
+                    "totais": {
+                        chave: sum(getattr(resumo, chave) for resumo in resumos)
+                        for chave in (
+                            "candidatos_pdf",
+                            "baixados",
+                            "novas_versoes",
+                            "restaurados",
+                            "aliases_duplicados",
+                            "ja_integros",
+                            "tamanho_excedido",
+                            "conteudo_inesperado",
+                            "falhas_download",
+                            "bloqueios_robots",
+                            "urls_invalidas",
+                            "puladas_host_suspenso",
+                        )
+                    },
+                    "hosts_suspensos": [
+                        host for resumo in resumos for host in resumo.hosts_suspensos
+                    ],
+                    "urls_perdidas": [
+                        url for resumo in resumos for url in resumo.urls_perdidas
+                    ],
+                },
+            )
+    except ViolacaoPolidez as exc:
+        typer.echo(f"ERRO: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    total_puladas_suspensao = sum(r.puladas_host_suspenso for r in resumos)
+    for resumo in resumos:
+        typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+        typer.echo(
+            f"  Candidatos PDF: {resumo.candidatos_pdf} "
+            f"(baixados: {resumo.baixados}, novas versões: {resumo.novas_versoes}, "
+            f"restaurados: {resumo.restaurados})"
+        )
+        typer.echo(
+            f"  Dedupe/retomada: {resumo.aliases_duplicados} alias por hash duplicado, "
+            f"{resumo.ja_integros} já íntegros (pulados sem rede)"
+        )
+        notas = (
+            f"  Perdas:      {resumo.tamanho_excedido} acima do cap "
+            f"({polidez.max_mb_documento:g} MB), "
+            f"{resumo.conteudo_inesperado} não-PDF, "
+            f"{resumo.falhas_download} falhas de download, "
+            f"{resumo.bloqueios_robots} bloqueios de robots"
+        )
+        typer.echo(notas)
+        if resumo.hosts_suspensos:
+            typer.echo(
+                f"  Host suspenso (403×{polidez.max_403_consecutivos}): "
+                f"{', '.join(resumo.hosts_suspensos)} — "
+                "restante DO HOST é pulado nesta execução; tenta de novo na próxima."
+            )
+        if resumo.puladas_host_suspenso:
+            typer.echo(
+                f"  Puladas por suspensão de host: {resumo.puladas_host_suspenso}"
+            )
+        for perdida in resumo.urls_perdidas:
+            typer.echo(f"  Perdida:    {perdida}")
+
+    total_baixados = sum(r.baixados + r.novas_versoes + r.restaurados for r in resumos)
+    typer.echo("")
+    if total_puladas_suspensao:
+        typer.echo(
+            f"URLs puladas por suspensão de host nesta execução: {total_puladas_suspensao}"
+        )
+    typer.echo(
+        f"Coleta concluída: {len(resumos)} portal(is), {total_baixados} documento(s) "
+        f"gravados em {raiz_corpus} "
+        "(L1 completo; eventos no Manifesto; lote não abortado)."
+    )
+
+
+@app.command()
 def status() -> None:
     """Resumo do Manifesto: engine, schema, contagens e últimos eventos."""
     caminho = _caminho_manifesto()
@@ -451,6 +646,8 @@ def status() -> None:
         typer.echo(f"Portais:         {manifesto.contar_portais()}")
         typer.echo(f"Candidatos:      {manifesto.contar_candidatos()}")
         typer.echo(f"Seções visitadas:{manifesto.contar_secoes_visitadas()}")
+        typer.echo(f"Editais (L1):    {manifesto.contar_editais()}")
+        typer.echo(f"Documentos:      {manifesto.contar_documentos()}")
         typer.echo("")
         typer.echo("Últimos eventos:")
         eventos = manifesto.ultimos_eventos(limite=10)

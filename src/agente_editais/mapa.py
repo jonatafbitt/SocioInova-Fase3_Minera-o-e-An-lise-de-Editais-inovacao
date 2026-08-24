@@ -25,6 +25,8 @@ from .manifest import Manifesto, agora_iso
 CATEGORIAS: tuple[str, ...] = ("integra", "nit", "prpgi_prppg", "agencia_inovacao")
 SCHEMA_VERSION_SUPORTADA = 1
 
+_RE_SIGLA = re.compile(r"[A-Za-z0-9-]{2,}")
+
 
 class ErroMapa(ValueError):
     """Mapa-Mestre inválido; ``problemas`` traz uma linha acionável por erro."""
@@ -99,6 +101,18 @@ class Instituicao(BaseModel):
     sigla: str = Field(min_length=2)
     nome: str = Field(min_length=1)
     portal: list[Portal] = Field(min_length=1)
+
+    @field_validator("sigla")
+    @classmethod
+    def _sigla_segura(cls, valor: str) -> str:
+        # a sigla nomeia pastas em corpus/ (CAP-4): charset restrito impede
+        # escape da estrutura ({instituicao}/{ano}/) via '..', '/', espaços etc.
+        if not _RE_SIGLA.fullmatch(valor):
+            raise ValueError(
+                "sigla deve casar com [A-Za-z0-9-]{2,} — sem espaços, barras "
+                "ou pontuação (ela nomeia a pasta da instituição em corpus/)"
+            )
+        return valor.strip()
 
 
 class MapaMestre(BaseModel):

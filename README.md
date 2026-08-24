@@ -5,11 +5,11 @@ portais institucionais da **Rede Federal EPCT** — piloto de pesquisa
 acadêmica (PPGCS/UFBA). Pipeline em lotes orientado ao Manifesto SQLite;
 nenhum serviço residente, nenhum scheduler (spine AD-1).
 
-> **Escopo atual (Story 2):** fundação + Mapa-Mestre + pré-voo + **descoberta
-> híbrida** (CAP-2): navegação por palavras-chave a partir das seeds, com
-> HTTP leve por padrão e Playwright no gatilho. Downloads de PDF chegam na
-> Story 3 — o `descobrir` desta fase só registra seções visitadas e
-> *candidatos* a edital no Manifesto.
+> **Escopo atual (Story 3):** fundação + Mapa-Mestre + pré-voo + descoberta
+> híbrida (CAP-2) + **coleta de PDFs** (CAP-4): download com Registro L1
+> nascido na captura, dedupe por hash intra-portal, crawl retomável e
+> suspensão de host bloqueado. Texto/datação/catálogo vêm nas stories
+> seguintes — `flag_escaneado` e `metodo_datacao` nascem NULL no L1.
 
 ## Instalação
 
@@ -28,6 +28,8 @@ uv run agente-editais mapa validar   # valida o Mapa-Mestre e sincroniza com o M
 uv run agente-editais preflight      # pré-voo: testa cada seed; falhas não abortam o lote
 uv run agente-editais descobrir --portal IFBA   # CAP-2 para os portais da sigla
 uv run agente-editais descobrir --todos         # CAP-2 para todos os portais
+uv run agente-editais coletar --portal IFBA     # CAP-4 para os portais da sigla
+uv run agente-editais coletar --todos           # CAP-4 para todos os portais
 uv run agente-editais status         # resumo do Manifesto + últimos eventos
 ```
 
@@ -46,6 +48,54 @@ uv run agente-editais status         # resumo do Manifesto + últimos eventos
 - O crawling **obriga a janela off-peak** do fuso do host
   (`[crawl] respeitar_janela_off_peak`, default `true`); fora dela o comando
   recusa rodar (exit 1). O `preflight` não é afetado.
+
+### Coleta (CAP-4)
+
+- `coletar` consome `candidatos WHERE tipo='pdf'` e baixa VIA fetcher único
+  (robots.txt, delay por host, redirects hop-a-hop, janela off-peak obrigatória).
+- **L1 na captura:** cada PDF gravado nasce com registro completo em
+  `documentos` — id = 12 hex iniciais do SHA-256 dos bytes, verificado
+  pós-gravação (write-once, AD-2). `flag_escaneado`/`metodo_datacao` ficam
+  NULL para as stories de texto/datação. Dedupe e restauração comparam
+  sempre o hash SHA-256 **completo** — nunca o prefixo do id (colisão de
+  prefixo não vira alias/restauração falsa).
+- **Pastas:** `corpus/{INSTITUICAO}/{ano|_sem_ano}/<hash12>-<slug>.pdf`; o ano
+  é provisório (padrão 2019–2026 inequívoco na URL) — ano ausente, ambíguo
+  ou FORA da janela (ex.: 2027) vai para `_sem_ano/` nesta fase; a datação
+  (Story 5) confirma/move depois.
+- **Dedupe por hash intra-portal:** mesmos bytes em outra URL ⇒ um Documento
+  só + segundo registro com `referencia_para` — criado só se os bytes do
+  canônico existem no disco e batem no hash. Cruzar portais é decisão
+  humana (PRD OQ-4), nunca automática.
+- **Retomável:** re-executar não re-baixa nada íntegro; arquivo ausente ou
+  corrompido é re-baixado — hash igual restaura o documento (corrigindo
+  caminho stale no L1 se o destino recalculado mudou), hash diferente cria
+  nova versão ligada por `predecessor_id`. Interrupções no meio do lote
+  retomam exatamente dali (estado no Manifesto).
+- **Suspensão de host:** `[crawl] max_403_consecutivos` (default 3) HTTP 403
+  seguidos suspendem o host e pulam o **restante DO HOST** na execução —
+  inclusive nos outros portais do mesmo hostname num `coletar --todos`;
+  URLs puladas contam no relatório (`Puladas por suspensão de host`) e o
+  gatilho gera evento `host_suspenso`. A suspensão vale POR EXECUÇÃO — o
+  host tenta de novo no próximo crawl.
+- **Cap de tamanho:** `[crawl] max_mb_documento` (default 50 MB; inf/nan
+  recusados) — resposta maior aborta ANTES de gravar e vira evento
+  `tamanho_excedido`.
+- **Prazos de download:** `[crawl] download_prazo_s` (default 300 s) derruba
+  trickle que pendura o lote; `[crawl] download_timeout_s` (default 60 s) é
+  o timeout só da leitura do corpo, separado do timeout do probe.
+- **Falhas não abortam o lote:** erro de I/O (disco/quarentena/mkdir/hash
+  pós-mover) ou registro já existente (ciclo A→B→A) viram evento + perda
+  daquele candidato; a coleta segue.
+
+#### Higiene do `corpus/`
+
+- `corpus/.tmp/captura-<pid>-*.pdf` — temporários de download; cada execução
+  limpa APENAS os do próprio PID (`limpar_temporarios`), então arquivos de
+  processos mortos podem acumular — remova-os manualmente com o agente parado.
+- `*.corrompido-<ts>-<uuid8>.pdf` ao lado dos originais — bytes danificados
+  em quarentena auditável (evento `bytes_em_quarentena`); apague após
+  investigar. Nada dentro de `corpus/` é reescrito (AD-2).
 
 ### Renderização Playwright — verificação manual opcional
 
@@ -66,9 +116,9 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 
 | Código | Significado |
 | ------ | ----------- |
-| 0 | sucesso (inclusive pré-voo com seeds inacessíveis e descoberta com falhas por portal) |
-| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`, portal ausente do Manifesto) |
-| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir` (`--portal` vazio, `--portal` com `--todos`) |
+| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta e coleta com falhas por portal) |
+| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`, portal ausente do Manifesto) |
+| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar` (`--portal` vazio, `--portal` com `--todos`) |
 | 3 | engine SQLite abaixo do guard ≥ 3.51.3 |
 | 4 | Manifesto ocupado por outro processo |
 
@@ -77,10 +127,15 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 - `configs/mapa-mestre.toml` — cadastro curado (instituições → portais →
   categoria → seeds). Versionado em git; alteração exige commit (AD-9).
 - `configs/politeness.toml` — delay mínimo por host, janela off-peak (fuso do
-  host), User-Agent acadêmico.
+  host), User-Agent acadêmico e knobs de crawl: cap de tamanho por documento
+  (`[crawl] max_mb_documento`), prazo/timeout de download
+  (`download_prazo_s`, `download_timeout_s`) e limite de 403 consecutivos
+  que suspende um host (`max_403_consecutivos`).
 - `dados/manifesto.sqlite3` — Manifesto (estado único; criado no primeiro
   comando que grava). **Fora do git**; backup = copiar pasta após
   `PRAGMA wal_checkpoint(TRUNCATE)`.
+- `corpus/` — PDFs coletados (`{INSTITUICAO}/{ano|_sem_ano}/`). **Fora do
+  git**; mesmo regime de backup do Manifesto.
 
 ### Variáveis de ambiente
 
@@ -88,6 +143,7 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 | -------- | ------- | ------ |
 | `AGENTE_EDITAIS_CONFIGS` | `<raiz>/configs` | diretório dos configs |
 | `AGENTE_EDITAIS_MANIFESTO` | `<raiz>/dados/manifesto.sqlite3` | caminho do Manifesto |
+| `AGENTE_EDITAIS_CORPUS` | `<raiz>/corpus` | raiz do corpus de PDFs |
 
 ## Desenvolvimento
 

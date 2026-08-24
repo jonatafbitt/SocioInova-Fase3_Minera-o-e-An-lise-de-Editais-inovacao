@@ -13,6 +13,14 @@ Story 2 (CAP-2) estende o monopólio com:
   HTML estático) — engine importada sob demanda em ``_obter_com_playwright``
   e troca registrada no resultado para o chamador auditar por portal.
 
+Story 3 (CAP-4) completa o monopólio com o download de documentos:
+- ``baixar_stream``: GET em stream para arquivo temporário com hash SHA-256
+  calculado DURANTE a leitura e cap duro de tamanho (``[crawl]
+  max_mb_documento``); redirects continuam hop-a-hop com robots/delay;
+- contador de HTTP 403 CONSECUTIVOS por host — ``_LIMITE_403_SUSPENSAO``
+  seguidos sinalizam suspensão ao chamador (coleta), que pula o resto do
+  lote do portal e segue os demais, com evento.
+
 Toda página obtida passa pela polidez existente: delay por hostname, Session
 única compartilhável pelo lote e redirects cobertos.
 
@@ -24,6 +32,10 @@ Story 2, conforme notas da Story 1.
 
 from __future__ import annotations
 
+import hashlib
+import itertools
+import math
+import os
 import re
 import threading
 import time
@@ -52,15 +64,24 @@ class ErroConfigPolidez(ValueError):
 class Polidez(BaseModel):
     """Parâmetros de cortesia vindos de ``configs/politeness.toml``."""
 
-    delay_minimo_s: float = Field(ge=0)
+    delay_minimo_s: float = Field(ge=0, allow_inf_nan=False)
     off_peak: str
     user_agent: str = Field(min_length=1)
-    probe_timeout_s: float = Field(default=10.0, gt=0)
+    probe_timeout_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     probe_respeitar_janela_off_peak: bool = False
     # crawling (Story 2 em diante): janela off-peak é obrigatória POR DEFAULT.
     crawl_respeitar_janela_off_peak: bool = True
     # teto de páginas por portal na descoberta — politude contra espiral de BFS.
     max_paginas_por_portal: int = Field(default=200, gt=0)
+    # cap de tamanho POR DOCUMENTO baixado (MB) — excedente não é gravado (CAP-4).
+    max_mb_documento: float = Field(default=50.0, gt=0, allow_inf_nan=False)
+    # prazo TOTAL de cada download (s): trickle que estourar vira falha do
+    # candidato — nunca um PDF pendurado segura o lote.
+    download_prazo_s: float = Field(default=300.0, gt=0, allow_inf_nan=False)
+    # timeout de LEITURA do download (s), separado do timeout do probe.
+    download_timeout_s: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    # 403 seguidos que caracterizam bloqueio persistente e suspendem o host.
+    max_403_consecutivos: int = Field(default=3, gt=0)
 
     @field_validator("off_peak")
     @classmethod
@@ -71,7 +92,14 @@ class Polidez(BaseModel):
 
 _CHAVES_RAIZ = ("delay_minimo_s", "off_peak", "user_agent")
 _CHAVES_PROBE = ("timeout_s", "respeitar_janela_off_peak")
-_CHAVES_CRAWL = ("respeitar_janela_off_peak", "max_paginas_por_portal")
+_CHAVES_CRAWL = (
+    "respeitar_janela_off_peak",
+    "max_paginas_por_portal",
+    "max_mb_documento",
+    "download_prazo_s",
+    "download_timeout_s",
+    "max_403_consecutivos",
+)
 
 
 def _numero_positivo(caminho: Path, campo: str, valor: object) -> float:
@@ -148,6 +176,45 @@ def carregar_polidez(caminho: Path) -> Polidez:
             f"{caminho}: 'crawl.max_paginas_por_portal' exige inteiro positivo, "
             f"recebido {max_paginas!r}."
         )
+    max_mb = crawl_bruto.get("max_mb_documento", 50.0)
+    if (
+        isinstance(max_mb, bool)
+        or not isinstance(max_mb, (int, float))
+        or not math.isfinite(float(max_mb))
+        or float(max_mb) <= 0
+    ):
+        raise ErroConfigPolidez(
+            f"{caminho}: 'crawl.max_mb_documento' exige número positivo finito "
+            f"(inf/nan recusados), recebido {max_mb!r}."
+        )
+    prazo = crawl_bruto.get("download_prazo_s", 300.0)
+    if (
+        isinstance(prazo, bool)
+        or not isinstance(prazo, (int, float))
+        or not math.isfinite(float(prazo))
+        or float(prazo) <= 0
+    ):
+        raise ErroConfigPolidez(
+            f"{caminho}: 'crawl.download_prazo_s' exige número positivo finito, "
+            f"recebido {prazo!r}."
+        )
+    timeout_leitura = crawl_bruto.get("download_timeout_s", 60.0)
+    if (
+        isinstance(timeout_leitura, bool)
+        or not isinstance(timeout_leitura, (int, float))
+        or not math.isfinite(float(timeout_leitura))
+        or float(timeout_leitura) <= 0
+    ):
+        raise ErroConfigPolidez(
+            f"{caminho}: 'crawl.download_timeout_s' exige número positivo finito, "
+            f"recebido {timeout_leitura!r}."
+        )
+    max_403 = crawl_bruto.get("max_403_consecutivos", 3)
+    if isinstance(max_403, bool) or not isinstance(max_403, int) or max_403 <= 0:
+        raise ErroConfigPolidez(
+            f"{caminho}: 'crawl.max_403_consecutivos' exige inteiro positivo, "
+            f"recebido {max_403!r}."
+        )
 
     try:
         return Polidez(
@@ -162,6 +229,10 @@ def carregar_polidez(caminho: Path) -> Polidez:
             probe_respeitar_janela_off_peak=respeitar,
             crawl_respeitar_janela_off_peak=crawl_respeitar,
             max_paginas_por_portal=max_paginas,
+            max_mb_documento=float(max_mb),
+            download_prazo_s=float(prazo),
+            download_timeout_s=float(timeout_leitura),
+            max_403_consecutivos=max_403,
         )
     except ValueError as exc:
         raise ErroConfigPolidez(f"{caminho}: valor inválido — {exc}") from exc
@@ -215,9 +286,11 @@ def reiniciar_cache_robots() -> None:
 
 
 def reiniciar_estado_polidez() -> None:
-    """Limpa registro de último pedido e cache de robots.txt (uso em testes)."""
+    """Limpa delay, cache de robots e contadores 403 (início de execução/testes)."""
     with _trava_delay:
         _ultimo_pedido_por_host.clear()
+    with _trava_403:
+        _contadores_403.clear()
     reiniciar_cache_robots()
 
 
@@ -756,6 +829,266 @@ def obter_html(
     assert sessao is not None
     try:
         return _obter_estatico(destino, polidez, sessao, conteudo_presente, inicio)
+    finally:
+        if propria:
+            sessao.close()
+
+
+# -- download de documentos (CAP-4): stream + hash em voo + cap + 403 ----------
+
+
+_CHUNK_DOWNLOAD = 8 * 1024  # 1º chunk ~8 KB: sniff de %PDF- antes de puxar o resto
+_MAGICO_PDF = b"%PDF-"
+
+_contadores_403: dict[str, int] = {}
+_trava_403 = threading.Lock()
+
+
+def contagem_403_consecutivos(host: str) -> int:
+    """403 seguidos atuais do host (diagnóstico/testes)."""
+    with _trava_403:
+        return _contadores_403.get(host, 0)
+
+
+def _registrar_status_download(host: str, status_http: int) -> int:
+    """Avança/zera o contador de 403 consecutivos; retorna o valor atual.
+
+    O limite que suspende o host é configurável
+    (``[crawl] max_403_consecutivos``, default 3) e vale para o CHAMADOR —
+    aqui só se mantém a contagem por host.
+    """
+    with _trava_403:
+        if status_http == 403:
+            _contadores_403[host] = _contadores_403.get(host, 0) + 1
+        else:
+            _contadores_403[host] = 0
+        return _contadores_403[host]
+
+
+@dataclass(slots=True)
+class ResultadoDownload:
+    """Desfecho de ``baixar_stream`` — o chamador converte em eventos/estado.
+
+    ``hash_sha256`` vem pronto do stream (AD-2: calculado DURANTE a leitura);
+    ``excedeu_cap=True`` garante que NADA foi persistido no destino temporário;
+    ``conteudo_inesperado`` aborta ANTES de baixar o corpo inteiro (primeiro
+    chunk sem ``%PDF-`` e content-type não-PDF).
+    """
+
+    url: str
+    url_final: str
+    ok: bool
+    status_http: int | None = None
+    hash_sha256: str | None = None
+    bytes_baixados: int = 0
+    excedeu_cap: bool = False
+    conteudo_inesperado: bool = False
+    content_type: str | None = None
+    estourou_prazo: bool = False
+    bloqueio_robots: bool = False
+    contador_403: int = 0
+    erro: str | None = None
+    duracao_s: float = 0.0
+
+
+def baixar_stream(
+    url: str,
+    destino_tmp: str | Path,
+    polidez: Polidez,
+    *,
+    max_bytes: int,
+    sessao: requests.Session | None = None,
+) -> ResultadoDownload:
+    """Baixa um documento em stream para ``destino_tmp`` sob polidez integral.
+
+    Mesma disciplina de ``obter_html``: redirects MANUAIS hop-a-hop, robots.txt
+    consultado/honrado ANTES de cada requisição (§9.1), delay efetivo por host
+    (incluindo Crawl-delay) e Session compartilhável pelo lote. O corpo é lido
+    em chunks direto para o arquivo temporário com SHA-256 calculado em voo;
+    ultrapassar ``max_bytes`` ou o prazo total (``download_prazo_s``) aborta
+    ANTES de completar a gravação (o temporário parcial é removido). O PRIMEIRO
+    chunk é inspecionado antes de baixar o resto: sem ``%PDF-`` no início E sem
+    content-type PDF, o download é interrompido ali mesmo
+    (``conteudo_inesperado=True``). Falhas viram ``ResultadoDownload(ok=False)``
+    — quem decide suspender host/continuar o lote é o chamador.
+    """
+    inicio = time.perf_counter()
+    try:
+        destino = normalizar_url(url)
+    except ValueError as exc:
+        return ResultadoDownload(
+            url=url.strip(),
+            url_final=url.strip(),
+            ok=False,
+            erro=f"ValueError: {exc}",
+            duracao_s=time.perf_counter() - inicio,
+        )
+
+    propria = sessao is None
+    if propria:
+        sessao = nova_sessao(polidez.user_agent)
+    assert sessao is not None
+
+    # connect segue o timeout curto do probe; a LEITURA do corpo tem teto próprio
+    tempo = (polidez.probe_timeout_s, polidez.download_timeout_s)
+    url_atual = destino
+    resposta: requests.Response | None = None
+
+    def _falha(url_referencia: str, **campos: object) -> ResultadoDownload:
+        return ResultadoDownload(
+            url=destino,
+            url_final=url_referencia,
+            ok=False,
+            duracao_s=time.perf_counter() - inicio,
+            **campos,  # type: ignore[arg-type]
+        )
+
+    try:
+        for _salto in range(_MAX_REDIRECTS + 1):
+            decisao_hop = robots_para_host(url_atual, polidez, sessao=sessao)
+            if not decisao_hop.pode_acessar(url_atual, polidez.user_agent):
+                return _falha(
+                    url_atual,
+                    bloqueio_robots=True,
+                    erro=f"bloqueado por {decisao_hop.origem}/robots.txt",
+                )
+
+            balde = hostname_de(url_atual)
+            try:
+                _aguardar_delay(balde, _delay_efetivo(polidez, decisao_hop))
+                resposta = sessao.get(
+                    url_atual, timeout=tempo, allow_redirects=False, stream=True
+                )
+                _marcar_pedido(balde)
+            except requests.RequestException as exc:
+                return _falha(url_atual, erro=f"{type(exc).__name__}: {exc}")
+
+            if resposta.status_code not in _STATUS_REDIRECT:
+                # contador avança em TODO hop terminal — inclusive 403 no meio
+                # de uma cadeia que até aqui só redirecionou; 3xx é neutro
+                # (não incrementa nem zera o streak do host)
+                consecutivos = _registrar_status_download(
+                    balde, resposta.status_code
+                )
+                break
+
+            location = resposta.headers.get("Location")
+            resposta.close()
+            resposta = None
+            if not location:
+                return _falha(
+                    url_atual, erro=f"redirect de {url_atual} sem cabeçalho Location"
+                )
+            try:
+                url_atual = normalizar_url(urljoin(url_atual, location))
+            except ValueError as exc:
+                return _falha(
+                    url_atual,
+                    erro=f"redirect para URL inválida ({location!r}): {exc}",
+                )
+        else:
+            return _falha(
+                url_atual, erro=f"excesso de redirects (>{_MAX_REDIRECTS}) a partir de {destino}"
+            )
+
+        assert resposta is not None  # o loop só sai por break COM resposta viva
+        status = resposta.status_code
+
+        if status >= 400:
+            resposta.close()
+            return _falha(
+                url_atual,
+                status_http=status,
+                contador_403=consecutivos if status == 403 else 0,
+                erro=f"HTTP {status}",
+            )
+
+        tipo_conteudo = (resposta.headers.get("Content-Type") or "").strip().lower()
+
+        # sniff ANTES de puxar o corpo inteiro (~1º chunk de 8 KB): não-PDF não
+        # vira Documento e nem gasta banda/bytes de gravação (I/O matrix); o
+        # cap de tamanho continua valendo para o restante da leitura
+        hasher = hashlib.sha256()
+        total = 0
+        estourou = False
+        estourou_prazo = False
+        caminho_tmp = Path(destino_tmp)
+        caminho_tmp.parent.mkdir(parents=True, exist_ok=True)
+        prazo = time.monotonic() + polidez.download_prazo_s
+        try:
+            iterador = resposta.iter_content(chunk_size=_CHUNK_DOWNLOAD)
+            primeiro = next(iterador, b"")
+            if primeiro and not (
+                primeiro.startswith(_MAGICO_PDF) or "pdf" in tipo_conteudo
+            ):
+                resposta.close()
+                return _falha(
+                    url_atual,
+                    status_http=status,
+                    bytes_baixados=len(primeiro),
+                    conteudo_inesperado=True,
+                    content_type=tipo_conteudo or None,
+                    erro=(
+                        "conteudo inicial nao-PDF "
+                        f"({tipo_conteudo or 'sem content-type'})"
+                    ),
+                )
+
+            with caminho_tmp.open("wb") as saida:
+                for pedaco in itertools.chain((primeiro,), iterador):
+                    if not pedaco:
+                        continue
+                    total += len(pedaco)
+                    if total > max_bytes:
+                        estourou = True
+                        break
+                    if time.monotonic() > prazo:
+                        estourou_prazo = True
+                        break
+                    hasher.update(pedaco)
+                    saida.write(pedaco)
+                if not estourou and not estourou_prazo:
+                    saida.flush()
+                    os.fsync(saida.fileno())
+        except requests.RequestException as exc:
+            return _falha(url_atual, status_http=status, erro=f"{type(exc).__name__}: {exc}")
+        finally:
+            resposta.close()
+
+        if estourou:
+            caminho_tmp.unlink(missing_ok=True)
+            return _falha(
+                url_atual,
+                status_http=status,
+                bytes_baixados=total,
+                excedeu_cap=True,
+                content_type=tipo_conteudo or None,
+                erro=f"conteudo excede max_bytes ({max_bytes})",
+            )
+        if estourou_prazo:
+            caminho_tmp.unlink(missing_ok=True)
+            return _falha(
+                url_atual,
+                status_http=status,
+                bytes_baixados=total,
+                estourou_prazo=True,
+                content_type=tipo_conteudo or None,
+                erro=(
+                    f"prazo de download excedido ({polidez.download_prazo_s:g}s "
+                    "de download_prazo_s)"
+                ),
+            )
+
+        return ResultadoDownload(
+            url=destino,
+            url_final=url_atual,
+            ok=True,
+            status_http=status,
+            hash_sha256=hasher.hexdigest(),
+            bytes_baixados=total,
+            content_type=tipo_conteudo or None,
+            duracao_s=time.perf_counter() - inicio,
+        )
     finally:
         if propria:
             sessao.close()

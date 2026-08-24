@@ -153,8 +153,8 @@ class _Manipulador(http.server.BaseHTTPRequestHandler):
         self._responder("GET")
 
 
-def _novo_servidor() -> ServidorFalso:
-    servidor = ServidorFalso(("127.0.0.1", 0), _Manipulador)
+def _novo_servidor(host: str = "127.0.0.1") -> ServidorFalso:
+    servidor = ServidorFalso((host, 0), _Manipulador)
     threading.Thread(target=servidor.serve_forever, daemon=True).start()
     return servidor
 
@@ -176,17 +176,39 @@ def servidor_fake():
 
 
 def url_do(servidor: http.server.ThreadingHTTPServer, caminho: str = "/ok") -> str:
+    host, porta = servidor.server_address[:2]
+    return f"http://{host}:{porta}{caminho}"
+
+
+def url_com_host(
+    servidor: http.server.ThreadingHTTPServer, host: str, caminho: str = "/ok"
+) -> str:
+    """URL com hostname EXPLÍTITO (porta do servidor).
+
+    Necessário quando o bind resolve para outro endereço (ex.: fixture
+    ``servidor_localhost`` liga em 'localhost' mas o SO reporta 127.0.0.1):
+    a URL do portal precisa carregar o HOSTNAME sob teste, não o IP do bind.
+    """
     porta = servidor.server_address[1]
-    return f"http://127.0.0.1:{porta}{caminho}"
+    return f"http://{host}:{porta}{caminho}"
 
 
 @pytest.fixture
 def criar_servidor_fake():
-    """Fábrica de servidores fake para testes que precisam de VÁRIOS hosts."""
+    """Fábrica de servidores fake para testes que precisam de VÁRIOS hosts.
+
+    ``criar_servidor_fake()`` usa 127.0.0.1; ``criar_servidor_fake("localhost")``
+    dá um SEGUNDO hostname de verdade — necessário quando a política sob teste
+    distingue hosts (ex.: suspensão de host por 403 na coleta). Sem hardcode
+    de 127.0.0.2: nem todo ambiente aceita bind/rotas em loopback "extra".
+    Se o bind em ``localhost`` falhar (OSError) OU o hostname não resolver/
+    servir de verdade, o teste deve usar o guard ``servidor_localhost`` abaixo
+    e pular (pytest.skip) — nunca fingir um segundo host que não existe.
+    """
     criados: list[ServidorFalso] = []
 
-    def _criar() -> ServidorFalso:
-        servidor = _novo_servidor()
+    def _criar(host: str = "127.0.0.1") -> ServidorFalso:
+        servidor = _novo_servidor(host)
         criados.append(servidor)
         return servidor
 
@@ -194,6 +216,29 @@ def criar_servidor_fake():
     for servidor in criados:
         servidor.shutdown()
         servidor.server_close()
+
+
+@pytest.fixture
+def servidor_localhost(criar_servidor_fake):
+    """Segundo servidor fake no hostname 'localhost', COM guard de ambiente.
+
+    Devolve o servidor só se ele for alcançável de verdade via
+    ``http://localhost:<porta>`` (resolução IPv4/IPv6 simétrica); caso
+    contrário o teste é pulado — ambientes exóticos não viram falso-positivo.
+    """
+    import urllib.request
+
+    try:
+        servidor = criar_servidor_fake("localhost")
+    except OSError as exc:
+        pytest.skip(f"bind em 'localhost' indisponível neste ambiente: {exc}")
+    porta = servidor.server_address[1]
+    try:
+        with urllib.request.urlopen(f"http://localhost:{porta}/ok", timeout=5):
+            pass
+    except OSError:
+        pytest.skip("'localhost' não alcança este servidor neste ambiente")
+    return servidor
 
 
 @pytest.fixture

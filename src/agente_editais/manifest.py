@@ -7,9 +7,19 @@ Governado por:
 - AD-10: guard de engine ``sqlite_version_info >= (3, 51, 3)`` (correção do
   bug WAL-reset) e custódia via tabela ``eventos`` append-only.
 
-Story 2 adiciona a migração v2 (CAP-2): ``candidatos`` e
+Story 2 adicionou a migração v2 (CAP-2): ``candidatos`` e
 ``secoes_visitadas``, ambas com UNIQUE (portal_id, url) para dedupe por URL
 normalizada (AD-8) ser imposto pelo banco, não por memória de processo.
+
+Story 3 adiciona a migração v3 (CAP-4): ``editais`` e ``documentos`` — as
+ÚNICAS tabelas que ``coleta`` cria (AD-11). Identidade do Documento é o hash
+SHA-256 dos bytes capturados (``id`` = 12 hex iniciais, AD-8); a chave é
+composta com ``url_origem`` porque o MESMO conteúdo pode ter múltiplas
+origens legítimas: alias intra-portal por hash duplicado (referencia_para)
+e capturas cruzando portais da mesma instituição (OQ-4 — dedupe automático
+vale só DENTRO do portal). Versões novas de um documento em evolução ligam-se
+por ``predecessor_id``; ``flag_escaneado`` e ``metodo_datacao`` nascem NULL
+e são preenchidos pelas stories seguintes (pipeline em estágios, C5).
 
 Convenções do spine: placeholders qmark; datas como texto ISO 8601 com
 timezone; tabelas no plural; nenhuma API removida/deprecada do Python 3.14.
@@ -20,14 +30,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 ENGINE_MINIMA = (3, 51, 3)
 LOCK_TIMEOUT_MS = 1_500
 
-SCHEMA_VERSAO_ATUAL = 2
+SCHEMA_VERSAO_ATUAL = 3
 
 # Cada declaração é executada isoladamente dentro da transação exclusiva de
 # startup — gatilhos têm ';' no corpo e não podem ser divididos por split.
@@ -103,7 +113,50 @@ _MIGRACAO_V2: tuple[str, ...] = (
     "CREATE INDEX idx_secoes_visitadas_portal ON secoes_visitadas(portal_id)",
 )
 
-MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = ((1, _MIGRACAO_V1), (2, _MIGRACAO_V2))
+_MIGRACAO_V3: tuple[str, ...] = (
+    """
+    CREATE TABLE editais (
+        id             TEXT PRIMARY KEY,
+        instituicao_id INTEGER NOT NULL REFERENCES instituicoes(id),
+        ano_provisorio INTEGER
+            CHECK (ano_provisorio IS NULL OR ano_provisorio BETWEEN 2019 AND 2026),
+        criado_em      TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX idx_editais_instituicao ON editais(instituicao_id)",
+    """
+    CREATE TABLE documentos (
+        id              TEXT NOT NULL,
+        edital_id       TEXT NOT NULL REFERENCES editais(id),
+        url_origem      TEXT NOT NULL,
+        caminho         TEXT NOT NULL,
+        hash_sha256     TEXT NOT NULL,
+        data_captura    TEXT NOT NULL,
+        ano_provisorio  INTEGER
+            CHECK (ano_provisorio IS NULL OR ano_provisorio BETWEEN 2019 AND 2026),
+        versao_crawler  TEXT NOT NULL,
+        predecessor_id  TEXT,
+        -- referencia_para fica SEM FK de propósito (assimetria deliberada
+        -- face à FK composta de predecessor_id): o alias aponta para o id
+        -- (hash12) do canônico, que é linha COMPOSTA (id, url_origem) já
+        -- existente — um FK simples em id não teria alvo UNIQUE, e a
+        -- integridade dele é garantida na camada de coleta + testes.
+        referencia_para TEXT,
+        flag_escaneado  INTEGER CHECK (flag_escaneado IS NULL OR flag_escaneado IN (0, 1)),
+        metodo_datacao  TEXT,
+        PRIMARY KEY (id, url_origem),
+        FOREIGN KEY (predecessor_id, url_origem) REFERENCES documentos(id, url_origem)
+    )
+    """,
+    "CREATE INDEX idx_documentos_edital ON documentos(edital_id)",
+    "CREATE INDEX idx_documentos_url_origem ON documentos(url_origem)",
+)
+
+MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (1, _MIGRACAO_V1),
+    (2, _MIGRACAO_V2),
+    (3, _MIGRACAO_V3),
+)
 
 
 class ErroEngineIncompativel(RuntimeError):
@@ -125,6 +178,16 @@ class ErroSchemaFuturo(RuntimeError):
 def agora_iso() -> str:
     """Timestamp ISO 8601 com timezone do host (convenção §Datas & horas)."""
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def agora_iso_utc() -> str:
+    """Timestamp ISO 8601 NORMALIZADO para UTC (offset convertido).
+
+    Usado onde o valor é CHAVE DE ORDENAÇÃO (``documentos.data_captura``):
+    strings UTC ordenam lexicograficamente entre execuções feitas em fusos/
+    horários de verão diferentes; offsets locais não.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class Manifesto:
@@ -340,6 +403,70 @@ class Manifesto:
                 "SELECT COUNT(*) FROM secoes_visitadas WHERE portal_id = ?", (portal_id,)
             )[0][0]
         )
+
+    # -- coleta (CAP-4, migração v3) -----------------------------------------
+
+    def candidatos_pdf_do_portal(self, portal_id: int) -> list[sqlite3.Row]:
+        """Candidatos tipo 'pdf' do portal na ordem de descoberta (lote estável)."""
+        return self.consultar(
+            """
+            SELECT id, url FROM candidatos
+            WHERE portal_id = ? AND tipo = 'pdf'
+            ORDER BY id
+            """,
+            (portal_id,),
+        )
+
+    def ultimo_documento_da_url(self, url: str) -> sqlite3.Row | None:
+        """Versão MAIS RECENTE registrada para a URL — base da retomada.
+
+        Retomada (AD-1): candidato com documento cujos bytes locais batem no
+        hash ⇒ trabalho já concluído; sem registro ou com bytes quebrados ⇒
+        refaz. A ordenação usa ``data_captura`` NORMALIZADA em UTC na gravação
+        (``agora_iso_utc``): strings UTC comparam lexicograficamente entre
+        execuções feitas em fusos diferentes. ``rowid`` desempata timestamps
+        idênticos na mesma execução.
+        """
+        linhas = self.consultar(
+            """
+            SELECT * FROM documentos
+            WHERE url_origem = ?
+            ORDER BY data_captura DESC, rowid DESC
+            LIMIT 1
+            """,
+            (url,),
+        )
+        return linhas[0] if linhas else None
+
+    def documento_mesmo_hash_no_portal(
+        self, portal_id: int, hash_sha256: str, *, exceto_url: str
+    ) -> sqlite3.Row | None:
+        """Registro com o MESMO conteúdo já capturado NESTE portal (AD-8).
+
+        A comparação é pelo hash SHA-256 COMPLETO (``hash_sha256 = ?``) —
+        NUNCA pelo prefixo 12-hex do ``id``: colisão de prefixo não pode virar
+        alias/restauração falsa. O escopo do dedupe por hash é o PORTAL —
+        cruzar portais da mesma instituição é decisão humana pendente (PRD
+        OQ-4), nunca automática. A associação registro→portal vai pela URL de
+        origem em ``candidatos``.
+        """
+        linhas = self.consultar(
+            """
+            SELECT d.* FROM documentos d
+            JOIN candidatos c ON c.url = d.url_origem
+            WHERE c.portal_id = ? AND d.hash_sha256 = ? AND d.url_origem <> ?
+            ORDER BY d.rowid
+            LIMIT 1
+            """,
+            (portal_id, hash_sha256, exceto_url),
+        )
+        return linhas[0] if linhas else None
+
+    def contar_editais(self) -> int:
+        return int(self.consultar("SELECT COUNT(*) FROM editais")[0][0])
+
+    def contar_documentos(self) -> int:
+        return int(self.consultar("SELECT COUNT(*) FROM documentos")[0][0])
 
     # -- ciclo de vida -----------------------------------------------------
 

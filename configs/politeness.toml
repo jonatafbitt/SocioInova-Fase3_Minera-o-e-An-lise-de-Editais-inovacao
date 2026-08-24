@@ -19,6 +19,21 @@ respeitar_janela_off_peak = true
 # para e registra evento quando atinge. Crawl-delay declarado pelo host é
 # honrado além do delay_minimo_s.
 max_paginas_por_portal = 200
+# Cap de tamanho POR DOCUMENTO (MB) na coleta (Story 3, CAP-4): resposta que
+# passa do teto aborta a leitura ANTES de gravar e vira evento
+# tamanho_excedido — o lote segue sem o documento. Valores inf/nan são
+# recusados na carga.
+max_mb_documento = 50
+# Prazo TOTAL de cada download (s): um trickle que estourar vira falha do
+# candidato — nunca um PDF pendurado segura o lote.
+download_prazo_s = 300
+# Timeout só da LEITURA do corpo do download (s), separado do timeout do
+# probe ([probe] timeout_s).
+download_timeout_s = 60
+# HTTP 403 CONSECUTIVOS que caracterizam bloqueio persistente e suspendem o
+# host pelo restante da execução (restante DO HOST é pulado; outros hosts
+# seguem; a suspensão é compartilhada entre portais numa execução --todos).
+max_403_consecutivos = 3
 
 [probe]
 timeout_s = 10
