@@ -11,6 +11,7 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia da Bahia"
   [[instituicao.portal]]
   nome = "Integra IFBA"
   categoria = "integra"
+  dinamico = true
   url = "https://integra.ifba.edu.br"
   seeds = ["https://integra.ifba.edu.br"]
 
@@ -27,6 +28,7 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia de São Paulo"
   [[instituicao.portal]]
   nome = "Integra IFSP"
   categoria = "integra"
+  dinamico = true
   url = "https://integra.ifsp.edu.br"
   seeds = ["https://integra.ifsp.edu.br"]
 
@@ -43,6 +45,7 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia de Mato Grosso do
   [[instituicao.portal]]
   nome = "Integra IFMS"
   categoria = "integra"
+  dinamico = true
   url = "https://integra.ifms.edu.br"
   seeds = ["https://integra.ifms.edu.br"]
 
@@ -53,6 +56,7 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia do Rio de Janeiro
   [[instituicao.portal]]
   nome = "Integra IFRJ"
   categoria = "integra"
+  dinamico = true
   url = "https://integra.ifrj.edu.br"
   seeds = ["https://integra.ifrj.edu.br"]
 
