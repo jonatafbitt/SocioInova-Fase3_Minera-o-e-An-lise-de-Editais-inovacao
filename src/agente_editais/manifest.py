@@ -27,6 +27,17 @@ Story 4 adiciona a migração v4 (CAP-6): colunas de proveniência do texto em
 ``flag_escaneado`` (nascida NULL na v3) via UPDATE (AD-11: demais estágios
 nunca INSERT em ``documentos``).
 
+Story 5 adiciona a migração v5 (CAP-3): ``evidencias_datacao`` — prova bruta
+POR FONTE consultada (FR-6 sem short-circuit), FK composta para
+``documentos(id, url_origem)`` e PK tripla que dá idempotência (uma linha por
+(documento, fonte)); ``fila_revisao`` — entidade própria da Fila de Revisão
+Manual (FR-8) com UNIQUE PARCIAL por url onde pendente imposta pelo banco e a
+decisão humana completa na própria linha (ano atribuído OU exclusão +
+justificativa obrigatória + autoria + data); ``documentos.ano_aceito`` nasce
+NULL com CHECK de janela e só é preenchido VIA ``aplicar_datacao`` (UPDATE,
+AD-11); ``candidatos.texto_ancora`` preserva a âncora desde a descoberta
+(FR-6 nasce na origem) — corpus antigo fica NULL = fonte indisponível.
+
 Convenções do spine: placeholders qmark; datas como texto ISO 8601 com
 timezone; tabelas no plural; nenhuma API removida/deprecada do Python 3.14.
 """
@@ -43,7 +54,7 @@ from typing import Any
 ENGINE_MINIMA = (3, 51, 3)
 LOCK_TIMEOUT_MS = 1_500
 
-SCHEMA_VERSAO_ATUAL = 4
+SCHEMA_VERSAO_ATUAL = 5
 
 # Cada declaração é executada isoladamente dentro da transação exclusiva de
 # startup — gatilhos têm ';' no corpo e não podem ser divididos por split.
@@ -168,11 +179,59 @@ _MIGRACAO_V4: tuple[str, ...] = (
     "ALTER TABLE documentos ADD COLUMN extraido_em TEXT",
 )
 
+# Story 5 (CAP-3): evidência bruta por fonte + fila humana fundamentada.
+# ``evidencias_datacao`` tem FK COMPOSTA para a linha do Documento e PK
+# tripla — regravar a mesma fonte na retomada substitui a própria linha sem
+# duplicar. ``fila_revisao`` impõe "um item ATIVO por URL" no BANCO via
+# índice parcial; motivo fica TEXT livre (fontes futuras podem motivar novos
+# motivos sem migração). ``ano_aceito`` carrega CHECK de janela — ano fora
+# de 2019–2026 é recusado pelo banco, nunca só pela camada.
+_MIGRACAO_V5: tuple[str, ...] = (
+    """
+    CREATE TABLE evidencias_datacao (
+        documento_id TEXT NOT NULL,
+        url_origem   TEXT NOT NULL,
+        fonte        TEXT NOT NULL CHECK (fonte IN ('url', 'ancora', 'pdf_meta')),
+        valor_bruto  TEXT NOT NULL,
+        localizacao  TEXT NOT NULL,
+        criado_em    TEXT NOT NULL,
+        PRIMARY KEY (documento_id, url_origem, fonte),
+        FOREIGN KEY (documento_id, url_origem) REFERENCES documentos(id, url_origem)
+    )
+    """,
+    "CREATE INDEX idx_evidencias_datacao_url ON evidencias_datacao(url_origem)",
+    """
+    CREATE TABLE fila_revisao (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        url_origem        TEXT NOT NULL,
+        portal_id         INTEGER NOT NULL REFERENCES portais(id),
+        motivo            TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'pendente'
+                          CHECK (status IN ('pendente', 'resolvida')),
+        criado_em         TEXT NOT NULL,
+        decidido_ano      INTEGER
+                          CHECK (decidido_ano IS NULL OR decidido_ano BETWEEN 2019 AND 2026),
+        decidido_exclusao INTEGER NOT NULL DEFAULT 0 CHECK (decidido_exclusao IN (0, 1)),
+        justificativa     TEXT,
+        evidencia_anexa   TEXT,
+        autor             TEXT,
+        decidido_em       TEXT
+    )
+    """,
+    "CREATE UNIQUE INDEX idx_fila_revisao_pendente_por_url "
+    "ON fila_revisao(url_origem) WHERE status = 'pendente'",
+    "CREATE INDEX idx_fila_revisao_url ON fila_revisao(url_origem)",
+    "ALTER TABLE documentos ADD COLUMN ano_aceito "
+    "INTEGER CHECK (ano_aceito IS NULL OR ano_aceito BETWEEN 2019 AND 2026)",
+    "ALTER TABLE candidatos ADD COLUMN texto_ancora TEXT",
+)
+
 MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (1, _MIGRACAO_V1),
     (2, _MIGRACAO_V2),
     (3, _MIGRACAO_V3),
     (4, _MIGRACAO_V4),
+    (5, _MIGRACAO_V5),
 )
 
 
@@ -387,23 +446,36 @@ class Manifesto:
         )
         return cursor.rowcount > 0
 
-    def registrar_candidato(self, portal_id: int, url: str, tipo: str) -> bool:
+    def registrar_candidato(
+        self, portal_id: int, url: str, tipo: str, *, texto_ancora: str | None = None
+    ) -> bool:
         """Registra candidato a edital dedupe por UNIQUE(portal_id,url); True se novo.
 
         Segunda execução sobre o mesmo achado NÃO duplica linha (AD-1/AD-8):
-        o banco, não memória de processo, é a fonte do "já visto".
+        o banco, não memória de processo, é a fonte do "já visto" — o retorno
+        continua significando "inserido AGORA". ``texto_ancora`` preserva a
+        âncora integral (TEXT livre) desde a descoberta (FR-6); numa
+        RE-DESCOBERTA o upsert preenche a âncora só quando ela ainda é NULL
+        — corpus antigo sem âncora é retroalimentado e uma âncora já gravada
+        NUNCA é sobrescrita.
         """
         if tipo not in ("pdf", "pagina_edital"):
             raise ValueError(f"tipo de candidato inválido: {tipo!r} (esperado pdf|pagina_edital)")
         conn = self._garantir_aberto()
+        existente = conn.execute(
+            "SELECT 1 FROM candidatos WHERE portal_id = ? AND url = ?",
+            (portal_id, url),
+        ).fetchone()
         cursor = conn.execute(
             """
-            INSERT OR IGNORE INTO candidatos (portal_id, url, tipo, descoberto_em)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO candidatos (portal_id, url, tipo, texto_ancora, descoberto_em)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(portal_id, url) DO UPDATE
+            SET texto_ancora = COALESCE(texto_ancora, excluded.texto_ancora)
             """,
-            (portal_id, url, tipo, agora_iso()),
+            (portal_id, url, tipo, texto_ancora, agora_iso()),
         )
-        return cursor.rowcount > 0
+        return existente is None and cursor.rowcount > 0
 
     def contar_candidatos(self, portal_id: int | None = None) -> int:
         if portal_id is None:
@@ -558,6 +630,223 @@ class Manifesto:
                 ),
             )
             return cursor.rowcount > 0
+
+    # -- datacao (CAP-3, migração v5) -----------------------------------------
+    # UPDATE-only sobre ``documentos`` (AD-11): a datação NUNCA INSERTa em
+    # editais/documentos nem parseia PDF — grava evidências, aplica o aceite
+    # e roteia à fila; a decisão humana vive inteira em ``fila_revisao``.
+
+    def registrar_evidencias(
+        self,
+        documento_id: str,
+        url_origem: str,
+        evidencias: list[tuple[str, str, str]],
+    ) -> int:
+        """Grava a evidência bruta de CADA fonte consultada (FR-6/CAP-3).
+
+        ``evidencias`` são triplas (fonte, valor_bruto, localizacao). O
+        INSERT OR REPLACE sobre a PK (documento_id, url_origem, fonte) torna
+        a operação idempotente: reprocessar o documento substitui a própria
+        linha em vez de duplicar. Devolve quantas linhas foram gravadas.
+        """
+        for fonte, _valor, _local in evidencias:
+            if fonte not in ("url", "ancora", "pdf_meta"):
+                raise ValueError(f"fonte de evidência inválida: {fonte!r}")
+        with self.transacao() as conn:
+            agora = agora_iso()
+            for fonte, valor_bruto, localizacao in evidencias:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO evidencias_datacao
+                        (documento_id, url_origem, fonte, valor_bruto, localizacao, criado_em)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (documento_id, url_origem, fonte, valor_bruto, localizacao, agora),
+                )
+            return len(evidencias)
+
+    def aplicar_datacao(
+        self, documento_id: str, url_origem: str, *, metodo: str, ano: int
+    ) -> bool:
+        """UPDATE do aceite de datação no Documento (AD-11: nunca INSERT).
+
+        Preenche ``metodo_datacao`` (∈ url|ancora|pdf_meta — cascata FR-7) e
+        ``ano_aceito`` (CHECK 2019–2026 no banco). Retorna True só se alguma
+        linha casou — UPDATE de 0 linhas NÃO é sucesso silencioso.
+        """
+        if metodo not in ("url", "ancora", "pdf_meta"):
+            raise ValueError(f"método de datação inválido: {metodo!r} (cascata FR-7)")
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE documentos
+                SET metodo_datacao = ?, ano_aceito = ?
+                WHERE id = ? AND url_origem = ?
+                """,
+                (metodo, ano, documento_id, url_origem),
+            )
+            return cursor.rowcount > 0
+
+    def enfileirar(self, url_origem: str, portal_id: int, motivo: str) -> bool:
+        """Roteia uma URL à Fila de Revisão Manual (FR-8); True se inserido.
+
+        O UNIQUE parcial por url onde pendente impõe "um item ativo por URL"
+        NO BANCO. Só o conflito com ESSE índice é tratado como "já
+        enfileirado" (False, idempotente); qualquer OUTRA IntegrityError
+        (FK inexistente etc.) PROPAGA — engoli-la esconderia bug real como
+        sucesso mudo. Evidências coletadas ficam em ``evidencias_datacao``
+        ligadas pela mesma url — nada é descartado ao enfileirar.
+        """
+        try:
+            with self.transacao() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO fila_revisao (url_origem, portal_id, motivo, status, criado_em)
+                    VALUES (?, ?, ?, 'pendente', ?)
+                    """,
+                    (url_origem, portal_id, motivo, agora_iso()),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.IntegrityError as exc:
+            # O conflito com o índice parcial ÚNICO chega como violação de
+            # coluna ("UNIQUE constraint failed: fila_revisao.url_origem") ou
+            # citando o índice, conforme a engine — só esse caso é "já
+            # enfileirado"; qualquer outra violação (FK, CHECK, NOT NULL)
+            # PROPAGA em vez de virar sucesso mudo.
+            mensagem = str(exc)
+            duplicado_pendente = (
+                "idx_fila_revisao_pendente_por_url" in mensagem
+                or (
+                    "UNIQUE constraint failed" in mensagem
+                    and "fila_revisao.url_origem" in mensagem
+                )
+            )
+            if duplicado_pendente:
+                return False
+            raise
+
+    def tem_item_de_fila(self, url_origem: str) -> bool:
+        """True se a url JÁ TEM item na fila — pendente OU resolvida.
+
+        Base do pulo idempotente da datação (AC da story: execução repetida
+        ⇒ zero re-decisões e fila intacta): itens resolvidos também travam o
+        reprocessamento, senão toda execução re-enfileiraria o que a decisão
+        humana já resolveu ("retomada não refaz nem duplica").
+        """
+        return bool(
+            self.consultar(
+                "SELECT 1 FROM fila_revisao WHERE url_origem = ? LIMIT 1",
+                (url_origem,),
+            )
+        )
+
+    def consultar_fila(self, status: str | None = "pendente") -> list[sqlite3.Row]:
+        """Itens da fila na ordem de criação; ``None`` lista todos os status."""
+        if status is None:
+            return self.consultar("SELECT * FROM fila_revisao ORDER BY id")
+        return self.consultar(
+            "SELECT * FROM fila_revisao WHERE status = ? ORDER BY id", (status,)
+        )
+
+    def registrar_decisao_fila(
+        self,
+        fila_id: int,
+        *,
+        decidido_ano: int | None,
+        decidido_exclusao: bool,
+        justificativa: str,
+        autor: str,
+        evidencia_anexa: str | None = None,
+    ) -> bool:
+        """Grava a decisão humana SOBRE um item pendente (FR-8) — transacional.
+
+        Exige EXATAMENTE um destino (--ano AAAA XOR --excluir), justificativa
+        textual e autoria, e ano dentro da janela 2019–2026 — recusa decidir
+        fora do contrato com ``ValueError`` (contrato uniforme para o
+        chamador de biblioteca; o CHECK do banco segue como última defesa).
+        Só afeta linhas PENDENTES: re-decidir item resolvido retorna False.
+        """
+        if decidido_exclusao == (decidido_ano is not None):
+            raise ValueError(
+                "a decisão deve ter exatamente UM destino: ano atribuído (2019–2026) "
+                "OU exclusão — nunca ambos nem nenhum."
+            )
+        if decidido_ano is not None and not (2019 <= decidido_ano <= 2026):
+            raise ValueError(
+                f"ano atribuído {decidido_ano} está fora da janela fixa 2019–2026 "
+                "(Never da story: ano fora da janela nunca é aceito)."
+            )
+        if not justificativa or not justificativa.strip():
+            raise ValueError("justificativa é obrigatória para decidir (FR-8).")
+        if not autor or not autor.strip():
+            raise ValueError("autoria é obrigatória para decidir (FR-8).")
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE fila_revisao
+                SET status = 'resolvida',
+                    decidido_ano = ?,
+                    decidido_exclusao = ?,
+                    justificativa = ?,
+                    evidencia_anexa = ?,
+                    autor = ?,
+                    decidido_em = ?
+                WHERE id = ? AND status = 'pendente'
+                """,
+                (
+                    decidido_ano,
+                    1 if decidido_exclusao else 0,
+                    justificativa.strip(),
+                    evidencia_anexa,
+                    autor.strip(),
+                    agora_iso(),
+                    fila_id,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def contar_documentos_datados(self) -> int:
+        """Documentos COM data de publicação definida (métrica do status).
+
+        Soma, sem duplicar por url (UNION), os dois destinos que fixam ano:
+        aceites automáticos (``metodo_datacao`` preenchido) e decisões
+        humanas com ano atribuído (fila RESOLVIDA com ``decidido_ano``) —
+        itens resolvidos com EXCLUSÃO não contam como datados.
+        """
+        return int(
+            self.consultar(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT url_origem FROM documentos
+                    WHERE metodo_datacao IS NOT NULL
+                    UNION
+                    SELECT url_origem FROM fila_revisao
+                    WHERE status = 'resolvida' AND decidido_ano IS NOT NULL
+                )
+                """
+            )[0][0]
+        )
+
+    def contar_fila(self, status: str | None = None) -> int:
+        if status is None:
+            return int(self.consultar("SELECT COUNT(*) FROM fila_revisao")[0][0])
+        return int(
+            self.consultar(
+                "SELECT COUNT(*) FROM fila_revisao WHERE status = ?", (status,)
+            )[0][0]
+        )
+
+    def evidencias_da_url(self, url_origem: str) -> list[sqlite3.Row]:
+        """Evidências brutas coletadas para a URL — exibição na fila."""
+        return self.consultar(
+            """
+            SELECT fonte, valor_bruto, localizacao, criado_em
+            FROM evidencias_datacao
+            WHERE url_origem = ?
+            ORDER BY rowid
+            """,
+            (url_origem,),
+        )
 
     # -- ciclo de vida -----------------------------------------------------
 

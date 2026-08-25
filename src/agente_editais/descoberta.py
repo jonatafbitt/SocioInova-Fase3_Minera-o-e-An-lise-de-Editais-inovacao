@@ -416,7 +416,9 @@ def _navegar(
                     )
                 continue
 
-            inserido = manifesto.registrar_candidato(contexto.portal_id, destino, classe[1])
+            inserido = manifesto.registrar_candidato(
+                contexto.portal_id, destino, classe[1], texto_ancora=texto_ancora
+            )
             if inserido:
                 resumo.candidatos_novos += 1
                 manifesto.registrar_evento(
@@ -427,6 +429,9 @@ def _navegar(
                         "tipo": classe[1],
                         "origem": url,
                         "profundidade": profundidade,
+                        # âncora TRUNCADA só no detalhe do evento (≤200) — o
+                        # valor INTEGRAL vive em candidatos.texto_ancora (FR-6)
+                        "ancora": texto_ancora[:200],
                         "instituicao": resumo.instituicao_sigla,
                         "portal": resumo.portal_nome,
                     },

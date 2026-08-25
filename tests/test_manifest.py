@@ -14,6 +14,7 @@ from agente_editais.manifest import (
     _MIGRACAO_V1,
     _MIGRACAO_V2,
     _MIGRACAO_V3,
+    _MIGRACAO_V4,
     ErroAberturaManifesto,
     ErroEngineIncompativel,
     ErroManifestoOcupado,
@@ -55,7 +56,7 @@ def test_engine_no_minimo_passa(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sqlite3, "sqlite_version_info", ENGINE_MINIMA)
     manifesto = Manifesto(tmp_path / "m.sqlite3")
     try:
-        assert manifesto.schema_version() == 4  # v1 + v2 + v3 + v4 (CAP-6)
+        assert manifesto.schema_version() == 5  # v1..v5 (CAP-6 + CAP-3)
     finally:
         manifesto.fechar()
 
@@ -101,7 +102,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
     primeira = Manifesto(caminho)
     try:
         assert primeira.consultar("PRAGMA journal_mode")[0][0] == "wal"
-        assert primeira.schema_version() == 4
+        assert primeira.schema_version() == 5
         objetos = primeira.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         )
@@ -110,7 +111,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
 
     segunda = Manifesto(caminho)
     try:
-        assert segunda.schema_version() == 4
+        assert segunda.schema_version() == 5
         assert segunda.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         ) == objetos
@@ -145,7 +146,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 4
+        assert manifesto.schema_version() == 5
         assert manifesto.contar_instituicoes() == 1, "dados v1 preservados"
         assert manifesto.contar_portais() == 1
         # tabelas da v2/v3 utilizáveis imediatamente após a migração
@@ -161,7 +162,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
     objetos_antes: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 4  # idempotente
+        assert reaberto.schema_version() == 5  # idempotente
         objetos_antes = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -210,7 +211,7 @@ def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 4
+        assert manifesto.schema_version() == 5
         assert manifesto.contar_candidatos() == 1, "candidatos v2 preservados"
         # v3 utilizável: retomada enxerga o candidato herdado
         pendentes = manifesto.candidatos_pdf_do_portal(1)
@@ -223,7 +224,7 @@ def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
     objetos_v3: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 4  # idempotente
+        assert reaberto.schema_version() == 5  # idempotente
         objetos_v3 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -278,7 +279,7 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 4
+        assert manifesto.schema_version() == 5  # migra até a versão atual
         colunas = {
             linha["name"]
             for linha in manifesto.consultar("PRAGMA table_info(documentos)")
@@ -313,7 +314,7 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
     objetos_v4: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 4  # idempotente
+        assert reaberto.schema_version() == 5  # idempotente
         objetos_v4 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -329,6 +330,371 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
         ) == objetos_v4
     finally:
         quarta.fechar()
+
+
+def _banco_v4_com_documento(caminho) -> None:
+    """Banco da Story 4 (v4) com portal, candidato, edital e documento."""
+    bruto = sqlite3.connect(caminho)
+    try:
+        for declaracao in (*_MIGRACAO_V1, *_MIGRACAO_V2, *_MIGRACAO_V3, *_MIGRACAO_V4):
+            bruto.execute(declaracao)
+        bruto.execute(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('S4', 'Instituição Story 4', '2026-01-01T00:00:00+00:00')"
+        )
+        bruto.execute(
+            """
+            INSERT INTO portais (
+                id, instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 1, 'Portal S4', 'integra', 'http://s4.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO candidatos (portal_id, url, tipo, descoberto_em)
+            VALUES (1, 'http://s4.org/x.pdf', 'pdf', '2026-04-04T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+            VALUES ('s4-2023-edital-x', 1, 2023, '2026-04-04T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO documentos (
+                id, edital_id, url_origem, caminho, hash_sha256, data_captura,
+                ano_provisorio, versao_crawler
+            ) VALUES ('def234567890', 's4-2023-edital-x', 'http://s4.org/x.pdf',
+                      'corpus/S4/2023/def234567890-edital-x.pdf',
+                      ?, '2026-04-04T01:00:00+00:00', 2023, '0.1.0')
+            """,
+            ("b" * 64,),
+        )
+        bruto.execute("PRAGMA user_version = 4")
+        bruto.commit()
+    finally:
+        bruto.close()
+
+
+def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> None:
+    """Banco da Story 4 (v4) abre na v5 com dados intactos e a datação operante.
+
+    ``ano_aceito``/``texto_ancora`` nascem NULL; as tabelas de evidência e de
+    fila ficam usáveis imediatamente; helpers UPDATE-only exercitados ponta a
+    ponta com idempotência.
+    """
+    caminho = tmp_path / "story4.sqlite3"
+    _banco_v4_com_documento(caminho)
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 5
+        colunas_documentos = {
+            linha["name"]
+            for linha in manifesto.consultar("PRAGMA table_info(documentos)")
+        }
+        colunas_candidatos = {
+            linha["name"]
+            for linha in manifesto.consultar("PRAGMA table_info(candidatos)")
+        }
+        assert "ano_aceito" in colunas_documentos, "coluna do aceite existe"
+        assert "texto_ancora" in colunas_candidatos, "âncora persistível desde a descoberta"
+        tabelas = {
+            linha["name"]
+            for linha in manifesto.consultar(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert {"evidencias_datacao", "fila_revisao"} <= tabelas
+
+        (documento,) = manifesto.consultar("SELECT * FROM documentos")
+        assert documento["metodo_datacao"] is None and documento["ano_aceito"] is None
+        assert documento["hash_sha256"] == "b" * 64, "documento v4 preservado"
+
+        # -- evidências: gravação e substituição idempotente pela PK tripla --
+        total = manifesto.registrar_evidencias(
+            "def234567890",
+            "http://s4.org/x.pdf",
+            [
+                ("url", "http://s4.org/x.pdf", "documentos.url_origem"),
+                ("ancora", "Edital 2023", "candidatos.texto_ancora"),
+                ("pdf_meta", '{"criado_em": "D:20230101"}', "docinfo"),
+            ],
+        )
+        assert total == 3
+        manifesto.registrar_evidencias(
+            "def234567890",
+            "http://s4.org/x.pdf",
+            [("url", "http://s4.org/x.pdf", "documentos.url_origem")],
+        )
+        linhas_fonte = [
+            linha["fonte"]
+            for linha in manifesto.consultar(
+                "SELECT fonte FROM evidencias_datacao"
+            )
+        ]
+        assert sorted(linhas_fonte) == ["ancora", "pdf_meta", "url"], (
+            "regravar a mesma fonte substitui a própria linha — nunca duplica"
+        )
+
+        # -- aceite UPDATE-only com rowcount verificado -----------------------
+        assert manifesto.aplicar_datacao(
+            "def234567890", "http://s4.org/x.pdf", metodo="url", ano=2023
+        ) is True
+        (datado,) = manifesto.consultar(
+            "SELECT metodo_datacao, ano_aceito FROM documentos"
+        )
+        assert datado["metodo_datacao"] == "url" and datado["ano_aceito"] == 2023
+        assert (
+            manifesto.aplicar_datacao(
+                "zzz999999999", "http://s4.org/x.pdf", metodo="url", ano=2023
+            )
+            is False
+        ), "UPDATE sem casamento é False — nunca sucesso silencioso"
+
+        # -- fila: enfileirar é idempotente pelo UNIQUE parcial ---------------
+        assert manifesto.enfileirar("http://s4.org/y.pdf", 1, "sem_data") is True
+        assert manifesto.enfileirar("http://s4.org/y.pdf", 1, "divergencia") is False, (
+            "segundo item pendente para a MESMA url é recusado pelo banco"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO fila_revisao (url_origem, portal_id, motivo, status, criado_em)
+                VALUES ('http://s4.org/y.pdf', 1, 'sem_data', 'pendente',
+                        '2026-05-05T00:00:00+00:00')
+                """
+            )
+        # FK inválida PROPAGA: só o conflito com o índice parcial é "já na fila"
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.enfileirar("http://s4.org/fantasma.pdf", 999, "sem_data")
+
+        # -- decisão humana: valida justificativa/autoria e destino único -----
+        (item,) = manifesto.consultar_fila("pendente")
+        assert item["motivo"] == "sem_data" and item["status"] == "pendente"
+        with pytest.raises(ValueError):
+            manifesto.registrar_decisao_fila(
+                item["id"],
+                decidido_ano=2023,
+                decidido_exclusao=False,
+                justificativa="   ",
+                autor="Pesquisadora",
+            )
+        with pytest.raises(ValueError):
+            manifesto.registrar_decisao_fila(
+                item["id"],
+                decidido_ano=None,
+                decidido_exclusao=False,
+                justificativa="ok",
+                autor="Pesquisadora",
+            )
+        with pytest.raises(ValueError):
+            manifesto.registrar_decisao_fila(
+                item["id"],
+                decidido_ano=2023,
+                decidido_exclusao=True,
+                justificativa="ok",
+                autor="Pesquisadora",
+            )
+        with pytest.raises(ValueError):
+            manifesto.registrar_decisao_fila(
+                item["id"],
+                decidido_ano=2030,
+                decidido_exclusao=False,
+                justificativa="ok",
+                autor="Pesquisadora",
+            )
+        assert (
+            manifesto.registrar_decisao_fila(
+                item["id"],
+                decidido_ano=2022,
+                decidido_exclusao=False,
+                justificativa="Capa declara 2022.",
+                autor="Pesquisadora",
+                evidencia_anexa="capa página 1",
+            )
+            is True
+        )
+        (decidido,) = manifesto.consultar("SELECT * FROM fila_revisao")
+        assert decidido["status"] == "resolvida" and decidido["decidido_ano"] == 2022
+        assert decidido["decidido_exclusao"] == 0 and decidido["autor"] == "Pesquisadora"
+        assert decidido["justificativa"] == "Capa declara 2022."
+        assert decidido["decidido_em"] is not None
+        # item resolvido não aceita segunda decisão (retomada não refaz)
+        assert (
+            manifesto.registrar_decisao_fila(
+                item["id"],
+                decidido_ano=None,
+                decidido_exclusao=True,
+                justificativa="de novo",
+                autor="Outra",
+            )
+            is False
+        )
+        assert manifesto.contar_fila("pendente") == 0
+        assert manifesto.contar_fila("resolvida") == 1
+    finally:
+        manifesto.fechar()
+
+    objetos_v5: list | None = None
+    reaberto = Manifesto(caminho)
+    try:
+        assert reaberto.schema_version() == 5  # idempotente
+        objetos_v5 = reaberto.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        (documento,) = reaberto.consultar("SELECT * FROM documentos")
+        assert documento["ano_aceito"] == 2023, "aceite persiste na retomada"
+    finally:
+        reaberto.fechar()
+
+    quinta = Manifesto(caminho)
+    try:
+        assert quinta.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ) == objetos_v5
+    finally:
+        quinta.fechar()
+
+
+def test_registrar_candidato_preenche_ancora_sem_sobrescrever(tmp_path) -> None:
+    """Upsert da âncora (FR-6 na origem): re-descoberta preenche NULL e
+    NUNCA sobrescreve âncora existente; retorno continua "inserido agora"."""
+    manifesto = Manifesto(tmp_path / "m.sqlite3")
+    try:
+        manifesto.executar(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('ANC', 'Instituto Âncora', '2026-01-01T00:00:00+00:00')"
+        )
+        manifesto.executar(
+            """
+            INSERT INTO portais (
+                instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 'Portal ANC', 'integra', 'http://a.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        # novo candidato nasce com âncora
+        assert (
+            manifesto.registrar_candidato(
+                1, "http://a.org/x.pdf", "pdf", texto_ancora="Edital 2023"
+            )
+            is True
+        )
+        (linha,) = manifesto.consultar("SELECT texto_ancora FROM candidatos")
+        assert linha["texto_ancora"] == "Edital 2023"
+
+        # re-registro SEM âncora: não é novo E preserva a âncora gravada
+        assert manifesto.registrar_candidato(1, "http://a.org/x.pdf", "pdf") is False
+        (linha,) = manifesto.consultar("SELECT texto_ancora FROM candidatos")
+        assert linha["texto_ancora"] == "Edital 2023", "nunca sobrescreve"
+
+        # candidato pré-existente SEM âncora: re-registro COM âncora preenche
+        assert manifesto.registrar_candidato(1, "http://a.org/y.pdf", "pdf") is True
+        assert (
+            manifesto.registrar_candidato(
+                1, "http://a.org/y.pdf", "pdf", texto_ancora="Chamada 2024"
+            )
+            is False
+        ), "preencher âncora de existente não é 'novo'"
+        (y,) = manifesto.consultar(
+            "SELECT texto_ancora FROM candidatos WHERE url = 'http://a.org/y.pdf'"
+        )
+        assert y["texto_ancora"] == "Chamada 2024", "corpus antigo retroalimentado"
+        total = manifesto.contar_candidatos()
+        assert total == 2, "upsert nunca duplica linha"
+    finally:
+        manifesto.fechar()
+
+
+def test_schema_v5_guarda_integridade_de_datacao(tmp_path) -> None:
+    """CHECKs/FKs da v5: janela no aceite, fontes fechadas, FK composta."""
+    manifesto = Manifesto(tmp_path / "m.sqlite3")
+    try:
+        manifesto.executar(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('V5', 'Instituto V5', '2026-01-01T00:00:00+00:00')"
+        )
+        manifesto.executar(
+            """
+            INSERT INTO portais (
+                instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 'Portal V5', 'integra', 'http://v5.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        manifesto.executar(
+            """
+            INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+            VALUES ('v5-2023-e', 1, 2023, '2026-01-01T00:00:00+00:00')
+            """
+        )
+        manifesto.executar(
+            """
+            INSERT INTO documentos (
+                id, edital_id, url_origem, caminho, hash_sha256, data_captura,
+                ano_provisorio, versao_crawler
+            ) VALUES ('ghi345678901', 'v5-2023-e', 'http://v5.org/a.pdf',
+                      'corpus/a.pdf', ?, '2026-01-01T00:00:00+00:00',
+                      2023, '0.1.0')
+            """,
+            ("c" * 64,),
+        )
+        # ano_aceito fora da janela é recusado PELO BANCO
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                "UPDATE documentos SET ano_aceito = 2018 WHERE id = 'ghi345678901'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                "UPDATE documentos SET ano_aceito = 2027 WHERE id = 'ghi345678901'"
+            )
+        # fonte fora do conjunto fechado recusada
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO evidencias_datacao (
+                    documento_id, url_origem, fonte, valor_bruto, localizacao, criado_em
+                ) VALUES ('ghi345678901', 'http://v5.org/a.pdf', 'time_tag', 'x',
+                          'y', '2026-01-01T00:00:00+00:00')
+                """
+            )
+        # FK composta: evidência para documento inexistente recusada
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO evidencias_datacao (
+                    documento_id, url_origem, fonte, valor_bruto, localizacao, criado_em
+                ) VALUES ('zzz999999999', 'http://v5.org/a.pdf', 'url', 'x',
+                          'y', '2026-01-01T00:00:00+00:00')
+                """
+            )
+        # status fechado + decisão com ano fora da janela recusados
+        manifesto.executar(
+            """
+            INSERT INTO fila_revisao (url_origem, portal_id, motivo, status, criado_em)
+            VALUES ('http://v5.org/a.pdf', 1, 'sem_data', 'pendente',
+                    '2026-01-01T00:00:00+00:00')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                "UPDATE fila_revisao SET status = 'arquivada' WHERE url_origem = "
+                "'http://v5.org/a.pdf'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                "UPDATE fila_revisao SET decidido_ano = 2030 WHERE url_origem = "
+                "'http://v5.org/a.pdf'"
+            )
+    finally:
+        manifesto.fechar()
 
 
 def test_schema_v3_guarda_integridade_de_documentos(tmp_path) -> None:
@@ -527,7 +893,7 @@ def test_status_happy_path_exit0_com_contagens(cli, configs_reais_no_tmp) -> Non
     assert resultado.exit_code == 0, resultado.output
     saida = resultado.output + (resultado.stderr or "")
     assert "SQLite engine:" in saida
-    assert "Schema version:  4" in saida
+    assert "Schema version:  5" in saida
     assert re.search(r"Instituições:\s+\d+", saida)
     assert re.search(r"Portais:\s+\d+", saida)
     # contagens da descoberta visíveis no status

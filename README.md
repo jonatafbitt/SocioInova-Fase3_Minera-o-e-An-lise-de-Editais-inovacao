@@ -5,12 +5,13 @@ portais institucionais da **Rede Federal EPCT** — piloto de pesquisa
 acadêmica (PPGCS/UFBA). Pipeline em lotes orientado ao Manifesto SQLite;
 nenhum serviço residente, nenhum scheduler (spine AD-1).
 
-> **Escopo atual (Story 4):** fundação + Mapa-Mestre + pré-voo + descoberta
+> **Escopo atual (Story 5):** fundação + Mapa-Mestre + pré-voo + descoberta
 > híbrida (CAP-2) + **coleta de PDFs** (CAP-4) + **texto por documento**
-> (CAP-6): extrator único com `.txt` irmão, `flag_escaneado` pelo limiar
-> configurável e proveniência no Manifesto (schema v4). Datação/catálogo vêm
-> nas stories seguintes — `metodo_datacao` segue NULL no L1; OCR é decisão
-> futura sob demanda (aqui só a flag).
+> (CAP-6) + **datação multi-fonte com fila humana** (CAP-3): evidência bruta
+> por fonte consultada (`url`/`ancora`/`pdf_meta`), regras de aceite na
+> janela 2019–2026 e Fila de Revisão Manual com decisão fundamentada
+> (schema v5). `<time>`/CSS, backfill Wayback e OCR são passos futuros —
+> `metodo_datacao` só é preenchido pelo aceite da datação.
 
 ## Instalação
 
@@ -33,12 +34,17 @@ uv run agente-editais coletar --portal IFBA     # CAP-4 para os portais da sigla
 uv run agente-editais coletar --todos           # CAP-4 para todos os portais
 uv run agente-editais textuar --portal IFBA     # CAP-6 para os portais da sigla
 uv run agente-editais textuar --todos           # CAP-6 para todos os portais
+uv run agente-editais datar --portal IFBA       # CAP-3 para os portais da sigla
+uv run agente-editais datar --todos             # CAP-3 para todos os portais
+uv run agente-editais fila listar               # itens pendentes com motivo e evidências
+uv run agente-editais fila decidir --id 1 --ano 2023 \
+    --justificativa "Capa declara 2023." --autor "Pesquisadora"
 uv run agente-editais status         # resumo do Manifesto + últimos eventos
 ```
 
 Em todos os comandos com seleção de alvo, `--portal SIGLA` é insensível a
 caixa: `--portal ifba` equivale a `--portal IFBA` (`descobrir`, `coletar`,
-`textuar`).
+`textuar`, `datar`).
 
 ### Descoberta (CAP-2)
 
@@ -138,6 +144,73 @@ caixa: `--portal ifba` equivale a `--portal IFBA` (`descobrir`, `coletar`,
   arquivo sumido) vira evento e o lote segue — exit 0.
 - **Sem rede:** a textuação é 100% local — a janela off-peak não se aplica.
 
+### Datação multi-fonte e fila humana (CAP-3)
+
+`datar` é 100% OFFLINE (sem rede, sem janela off-peak) e decide a Data de
+Publicação no Portal consultando TODAS as fontes locais disponíveis:
+
+- **Fontes da cascata (`url → ancora → pdf_meta`):**
+  - `url` — padrão de ano (2019–2026) nos segmentos do caminho;
+  - `ancora` — texto do link capturado pela descoberta desde a Story 5
+    (`candidatos.texto_ancora`, guardado integralmente; truncado só no
+    detalhe do evento);
+  - `pdf_meta` — docinfo do PDF (criação/modificação/título), lido SEMPRE
+    pela função `ler_metadados` do extrator único (AD-11: nada parseia PDF
+    fora de `texto.py`). Datas `D:AAAAMMDD…` têm os quatro primeiros dígitos
+    lidos como ano; título entra como texto livre.
+- **Evidência bruta por fonte (FR-6):** cada fonte disponível rende uma
+  linha em `evidencias_datacao` (fonte, valor bruto, localização) — a prova
+  do que foi consultado, inclusive quando não produz ano. Re-executar
+  substitui a própria linha (PK documento+url+fonte), nunca duplica.
+  **Limitação do corpus antigo:** documentos descobertos antes da Story 5
+  não têm âncora gravada — essa fonte simplesmente fica indisponível (a
+  evidência não nasce para ela); re-descobrir o portal RETROALIMENTA as
+  âncoras ausentes (preenche só quando NULL; âncora já gravada nunca é
+  sobrescrita).
+- **Regras de aceite (janela fixa 2019–2026):**
+  - um único ano candidato → ACEITO se corroborado por ≥2 fontes OU produzido
+    por fonte ≠ url; `metodo_datacao` = PRIMEIRA fonte da cascata cujo valor
+    converge para o consenso + `ano_aceito` (evento `datacao_aplicada`);
+  - só-URL sem corroboração → FILA `baixa_confianca_sourl` (baixa confiança —
+    regra que cobre também os anos-limite 2019/2026, que exigem corroboração
+    interna);
+  - ≥2 anos distintos entre fontes → FILA `divergencia` (humano resolve; sem
+    voto automático; sinal de qualidade no evento);
+  - nenhum ano na janela → FILA `sem_data`; ano fora da janela NUNCA é
+    aceito — fica como evidência bruta e, se for o caso único, motiva a fila.
+  Nada é descartado sem enfileirar: cada documento termina COM
+  `metodo_datacao`+evidências OU com item ativo na fila — **exceto** o de
+  falha de LEITURA (ver Idempotência e erros abaixo).
+- **Motivos da fila:** `sem_data` — nenhuma fonte produz ano dentro da
+  janela (inclui caso único fora dela); `baixa_confianca_sourl` — único ano
+  vem só da URL, sem corroboração interna; `divergencia` — ≥2 anos distintos
+  entre fontes.
+- **Fila de Revisão Manual (FR-8):** `fila_revisao` preserva URL, portal,
+  motivo e aponta para as evidências coletadas; UNIQUE parcial impõe um item
+  pendente por URL no banco. Decisão via CLI:
+  - `fila listar [--status pendente|resolvida|todas]` — itens com motivo e
+    evidências;
+  - `fila decidir --id N (--ano AAAA|--excluir) --justificativa T --autor T
+    [--evidencia T]` — grava ano atribuído OU exclusão + justificativa
+    OBRIGATÓRIA + autoria + data (tudo na própria linha + evento
+    `fila_decidida`). Recusa decidir sem justificativa/autoria, com destino
+    ausente ou duplo, ou com ano fora da janela — nada é gravado (exit 2).
+  Item resolvido não é redecidido; re-executar `datar` pula tanto datados
+  quanto urls com QUALQUER item de fila (pendente ou resolvido) — zero
+  re-decisões e fila intacta entre execuções. Nota: a decisão humana vive em
+  `fila_revisao` (com sua autoria/justificativa); `documentos.metodo_datacao`
+  permanece reservado aos métodos da cascata.
+- **Idempotência e erros:** PDF sumido/corrompido pós-coleta vira evento
+  `datacao_erro` fase `leitura` e o lote segue (exit 0). **Esse documento
+  fica SEM destino nesta passada** — nem aceite, nem fila — até o reparo dos
+  bytes: a retomada o re-tenta automaticamente na próxima execução. Falha de
+  persistência vira `datacao_erro` fase `persistencia`. Alias
+  (`referencia_para`) é datado como linha própria (mesma mídia, evidências
+  próprias).
+- **Movimentação física** dos PDFs de `_sem_ano/` para a pasta do ano
+  definitivo fica para decisão futura — nesta etapa só o banco muda.
+
+
 ### Renderização Playwright — verificação manual opcional
 
 A suíte exercita os gatilhos com o engine monkeypatched (sem navegador).
@@ -157,9 +230,9 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 
 | Código | Significado |
 | ------ | ----------- |
-| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta e textuar com falhas por portal/documento) |
-| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`/`textuar`, portal ausente do Manifesto) |
-| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar`/`textuar` (`--portal` vazio, `--portal` com `--todos`) |
+| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta, textuar e datar com falhas por portal/documento) |
+| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`/`textuar`/`datar`, portal ausente do Manifesto; item de fila inexistente ou já resolvido no `fila decidir`) |
+| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar`/`textuar`/`datar` (`--portal` vazio, `--portal` com `--todos`), da decisão na fila (`fila decidir`: sem justificativa/autoria, destino ausente ou duplo, ano fora da janela) e do filtro de listagem (`fila listar --status` inválido) |
 | 3 | engine SQLite abaixo do guard ≥ 3.51.3 |
 | 4 | Manifesto ocupado por outro processo |
 

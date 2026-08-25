@@ -106,6 +106,37 @@ def caminho_txt_do(pdf: Path) -> Path:
     return pdf.with_suffix(_EXTENSAO_TXT)
 
 
+_CAMPOS_DOCINFO: tuple[tuple[str, str], ...] = (
+    ("titulo", "/Title"),
+    ("criado_em", "/CreationDate"),
+    ("modificado_em", "/ModDate"),
+)
+
+
+def ler_metadados(caminho: str | Path) -> dict[str, str | None] | None:
+    """Lê o docinfo do PDF — ÚNICA porta de metadados fora do extrator (AD-11).
+
+    A datação (Story 5) importa ESTA função e nunca o pypdf diretamente.
+    Tolerante por contrato: devolve ``None`` quando os bytes NÃO podem ser
+    lidos como PDF (arquivo ausente ou corrompido) — o chamador trata como
+    erro isolado; devolve dict com valores possivelmente ``None`` quando o
+    PDF é válido mas o docinfo não traz o campo. Exceções JAMAIS propagam.
+    """
+    try:
+        leitor = PdfReader(str(caminho))
+        informacoes = leitor.metadata
+    except Exception:  # noqa: BLE001 — PDF inválido é resposta (None), não crash
+        return None
+    metadados: dict[str, str | None] = {}
+    for campo, chave in _CAMPOS_DOCINFO:
+        try:
+            bruto = informacoes.get(chave) if informacoes is not None else None
+        except Exception:  # noqa: BLE001 — docinfo podre não derruba a leitura
+            bruto = None
+        metadados[campo] = str(bruto) if bruto else None
+    return metadados
+
+
 def ja_extraido(documento: sqlite3.Row) -> bool:
     """True se o Documento já tem texto com hash vigente (retomada AD-1).
 

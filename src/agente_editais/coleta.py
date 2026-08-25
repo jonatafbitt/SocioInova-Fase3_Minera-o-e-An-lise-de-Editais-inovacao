@@ -83,12 +83,13 @@ class ErroVerificacaoCaptura(RuntimeError):
     """Hash pós-mover divergiu do hash do stream — captura não é confiável."""
 
 
-def ano_provisorio_da_url(url: str) -> int | None:
-    """Ano (2019–2026) quando INEQUÍVOCO nos segmentos do caminho; senão None.
+def anos_janela_no_path(url: str) -> set[int]:
+    """Todos os anos 2019–2026 encontrados nos SEGMENTOS DO CAMINHO da URL.
 
-    ``/2023/edital.pdf`` → 2023; ``/2021-1/x.pdf`` → 2021 (prefixo do
-    segmento); dois anos distintos no caminho ⇒ ambíguo ⇒ None (Design Notes:
-    a pasta vira ``_sem_ano/`` e a datação da Story 5 decide).
+    Fonte única da semântica de ano-por-URL: varre apenas o PATH (hostname,
+    porta e query ficam de fora — um subdomínio ``edital2023.if...`` não é
+    data de publicação). Reusada pela datação (Story 5) para manter coleta e
+    datação lendo a MESMA evidência da URL sem duplicar regex.
     """
     anos: set[int] = set()
     for segmento in urlsplit(url).path.split("/"):
@@ -96,6 +97,17 @@ def ano_provisorio_da_url(url: str) -> int | None:
             ano = int(achou)
             if ano in _ANOS_JANELA:
                 anos.add(ano)
+    return anos
+
+
+def ano_provisorio_da_url(url: str) -> int | None:
+    """Ano (2019–2026) quando INEQUÍVOCO nos segmentos do caminho; senão None.
+
+    ``/2023/edital.pdf`` → 2023; ``/2021-1/x.pdf`` → 2021 (prefixo do
+    segmento); dois anos distintos no caminho ⇒ ambíguo ⇒ None (Design Notes:
+    a pasta vira ``_sem_ano/`` e a datação da Story 5 decide).
+    """
+    anos = anos_janela_no_path(url)
     return anos.pop() if len(anos) == 1 else None
 
 

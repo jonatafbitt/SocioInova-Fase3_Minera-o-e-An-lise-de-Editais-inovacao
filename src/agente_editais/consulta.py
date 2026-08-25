@@ -1,20 +1,24 @@
 """CLI — superfície do pipeline em lotes (AD-1): um comando por execução.
 
 Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir``,
-``coletar``, ``textuar`` e ``status``.
+``coletar``, ``textuar``, ``datar``, ``fila listar|decidir`` e ``status``.
 
 Códigos de saída:
-- 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta
-       e textuação com falhas por portal/URL/documento — o lote segue,
-       FR-2/CAP-4/CAP-6);
+- 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta,
+       textuação e datação com falhas por portal/URL/documento — o lote segue,
+       FR-2/CAP-4/CAP-6/CAP-3);
 - 1  erro operacional genérico: Manifesto inexistente no ``status``,
        Manifesto mais novo que o agente, falha de abertura do banco,
        violação de janela off-peak (pré-voo exigente OU crawling),
-       sigla desconhecida no ``descobrir``/``coletar``/``textuar`` ou
-       portal ausente do Manifesto;
+       sigla desconhecida no ``descobrir``/``coletar``/``textuar``/``datar``
+       ou portal ausente do Manifesto; item de fila inexistente ou já
+       resolvido no ``fila decidir``;
 - 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml
-       e politeness.toml (nada é escrito; banco intocado) — ou flags de
-       ``descobrir``/``coletar``/``textuar`` malformadas (--portal/--todos);
+       e politeness.toml (nada é escrito; banco intocado) — ou flags
+       malformadas: --portal/--todos dos comandos de lote, decisão inválida
+       no ``fila decidir`` (sem justificativa/autoria, destino ausente ou
+       duplo, ano fora da janela 2019–2026) ou ``--status`` inválido no
+       ``fila listar``;
 - 3  engine SQLite abaixo do guard AD-10;
 - 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
 """
@@ -31,6 +35,7 @@ from typing import Iterator
 import typer
 
 from .coleta import ContextoColeta, ResumoColetaPortal, coletar_portal, limpar_temporarios
+from .datacao import ContextoDatacao, ResumoDatacaoPortal, datar_portal
 from .descoberta import ContextoPortal, ResumoPortal, navegar_portal
 from .fetcher import (
     ErroConfigPolidez,
@@ -68,6 +73,14 @@ app = typer.Typer(
 )
 mapa_app = typer.Typer(no_args_is_help=True, help="Operações sobre o Mapa-Mestre (CAP-1).")
 app.add_typer(mapa_app, name="mapa")
+fila_app = typer.Typer(
+    no_args_is_help=True,
+    help="Fila de Revisão Manual da datação (FR-8/CAP-3): listar e decidir.",
+)
+app.add_typer(fila_app, name="fila")
+
+_ANO_MINIMO, _ANO_MAXIMO = 2019, 2026
+_STATUS_FILA = ("pendente", "resolvida")
 
 ENV_CONFIGS = "AGENTE_EDITAIS_CONFIGS"
 ENV_MANIFESTO = "AGENTE_EDITAIS_MANIFESTO"
@@ -782,6 +795,283 @@ def textuar(
 
 
 @app.command()
+def datar(
+    portal: str = typer.Option(
+        None,
+        "--portal",
+        help="Sigla da instituição cujos portais serão datados (ex.: IFBA).",
+    ),
+    todos: bool = typer.Option(False, "--todos", help="Data todos os portais do Mapa-Mestre."),
+) -> None:
+    """CAP-3: datação multi-fonte OFFLINE com fila humana fundamentada.
+
+    Consulta TODAS as fontes locais disponíveis (url, âncora da descoberta e
+    docinfo VIA extrator único), grava evidência bruta por fonte e decide
+    pelas regras de aceite da janela 2019–2026: convergência aceita com
+    ``metodo_datacao`` (primeiro da cascata url→ancora→pdf_meta que
+    converge); só-URL sem corroboração, divergência ou ausência de data vão
+    à Fila de Revisão Manual (``fila decidir``). Retomável e idempotente:
+    documento datado ou já presente na fila é pulado. NÃO faz I/O de rede —
+    a janela off-peak não se aplica. Falhas pontuais viram evento
+    ``datacao_erro`` e o lote segue (exit 0).
+    """
+    if todos == (portal is not None):
+        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
+        raise typer.Exit(code=2)
+    if portal is not None and not portal.strip():
+        typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
+        raise typer.Exit(code=2)
+
+    mapa, caminho_mapa = _carregar_mapa_seguro()
+
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, p)
+        for instituicao in mapa.instituicao
+        for p in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        if todos:
+            typer.echo(
+                "ERRO: nenhum portal no Mapa-Mestre — cadastre instituições e "
+                "portais no mapa antes de datar.",
+                err=True,
+            )
+        else:
+            siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas_conhecidas}.",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+
+    mapa_sha256 = hash_arquivo(caminho_mapa)
+
+    resumos: list[ResumoDatacaoPortal] = []
+    totais: dict[str, int] = {}
+    with uso_manifesto() as manifesto:
+        contextos: list[ContextoDatacao] = []
+        ausentes: list[str] = []
+        for instituicao, p in pares:
+            id_portal = manifesto.id_portal_por_url(p.url)
+            if id_portal is None:
+                ausentes.append(f"[{instituicao.sigla}] {p.url}")
+                continue
+            contextos.append(ContextoDatacao(instituicao.sigla, p, id_portal))
+        if ausentes:
+            typer.echo(
+                "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                f"'agente-editais mapa validar' antes de datar: {'; '.join(ausentes)}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        for contexto in contextos:
+            resumos.append(datar_portal(contexto, manifesto, comando="datar"))
+        # computado UMA vez: payload do evento e eco CLI compartilham o mesmo dict
+        totais = {
+            chave: sum(getattr(resumo, chave) for resumo in resumos)
+            for chave in ("documentos", "aceitos", "enfileirados", "erros", "pulados")
+        }
+        manifesto.registrar_evento(
+            tipo="datar_concluido",
+            comando="datar",
+            detalhe={
+                "portais": len(resumos),
+                "alvo": "--todos" if todos else alvo,
+                "mapa_sha256": mapa_sha256,
+                "totais": totais,
+                "urls_perdidas": [
+                    url for resumo in resumos for url in resumo.urls_perdidas
+                ],
+            },
+        )
+
+    for resumo in resumos:
+        typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+        typer.echo(
+            f"  Documentos: {resumo.documentos} "
+            f"(aceitos: {resumo.aceitos}, fila: {resumo.enfileirados}, "
+            f"erros: {resumo.erros}, pulados: {resumo.pulados})"
+        )
+        for perdida in resumo.urls_perdidas:
+            typer.echo(f"  Perdida:    {perdida}")
+
+    typer.echo("")
+    typer.echo(
+        f"Datação concluída: {len(resumos)} portal(is), "
+        f"{totais['aceitos']} aceito(s), {totais['enfileirados']} na fila, "
+        f"{totais['erros']} erro(s), {totais['pulados']} pulado(s) "
+        "(evidências brutas + eventos no Manifesto; lote não abortado; "
+        "pendentes aguardam 'fila decidir')."
+    )
+
+
+def _recusar_decisao(mensagem: str) -> None:
+    """Flags de decisão malformadas: recusa ANTES de tocar o banco (exit 2)."""
+    typer.echo(f"ERRO: {mensagem}", err=True)
+    raise typer.Exit(code=2)
+
+
+@fila_app.command("listar")
+def fila_listar(
+    status: str = typer.Option(
+        "pendente",
+        "--status",
+        help="Filtra por status: pendente | resolvida | todas.",
+    ),
+) -> None:
+    """Lista itens da fila com motivo e evidências brutas coletadas."""
+    status_normalizado = status.strip().lower()
+    if status_normalizado not in (*_STATUS_FILA, "todas"):
+        typer.echo(
+            "ERRO: --status deve ser 'pendente', 'resolvida' ou 'todas' "
+            f"(recebido {status!r}).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    with uso_manifesto() as manifesto:
+        itens = manifesto.consultar_fila(
+            None if status_normalizado == "todas" else status_normalizado
+        )
+        rotulo_status = status_normalizado
+        typer.echo(f"Fila de revisão ({rotulo_status}): {len(itens)} item(ns)")
+        if not itens:
+            typer.echo("  (nada a decidir aqui)")
+            return
+        for item in itens:
+            typer.echo(
+                f"  #{item['id']} [{item['status']}] {item['url_origem']} "
+                f"(portal {item['portal_id']}) motivo={item['motivo']} "
+                f"enfileirado_em={item['criado_em']}"
+            )
+            evidencias = manifesto.evidencias_da_url(item["url_origem"])
+            if evidencias:
+                typer.echo(
+                    "    Evidências: "
+                    + "; ".join(f"{ev['fonte']} ({ev['localizacao']})" for ev in evidencias)
+                )
+                for ev in evidencias:
+                    valor = ev["valor_bruto"]
+                    if valor and len(valor) > 100:
+                        valor = valor[:100] + "…"
+                    typer.echo(f"      - {ev['fonte']}: {valor}")
+            else:
+                typer.echo("    Evidências: (nenhuma registrada)")
+            if item["status"] == "resolvida":
+                destino = (
+                    f"ANO {item['decidido_ano']}"
+                    if item["decidido_ano"] is not None
+                    else "EXCLUSÃO"
+                )
+                anexa = (
+                    f"; evidência anexa: {item['evidencia_anexa']}"
+                    if item["evidencia_anexa"]
+                    else ""
+                )
+                typer.echo(
+                    f"    Decisão: {destino} por {item['autor']} em "
+                    f"{item['decidido_em']}{anexa}"
+                )
+                typer.echo(f"      Justificativa: {item['justificativa']}")
+
+
+@fila_app.command("decidir")
+def fila_decidir(
+    id: int = typer.Option(None, "--id", help="Id do item pendente na fila."),
+    ano: int = typer.Option(
+        None, "--ano", help="Ano atribuído ao documento (2019–2026)."
+    ),
+    excluir: bool = typer.Option(
+        False, "--excluir", help="Marca o documento como EXCLUÍDO do corpus."
+    ),
+    justificativa: str = typer.Option(
+        None, "--justificativa", help="Justificativa textual OBRIGATÓRIA (FR-8)."
+    ),
+    autor: str = typer.Option(
+        None, "--autor", help="Autoria da decisão (obrigatória, FR-8)."
+    ),
+    evidencia: str = typer.Option(
+        None, "--evidencia", help="Referência opcional da evidência consultada."
+    ),
+) -> None:
+    """Decide UM item pendente: ano atribuído OU exclusão + justificativa.
+
+    Recusa decidir sem justificativa/autoria, sem destino único (--ano XOR
+    --excluir) ou com ano fora da janela 2019–2026 — nada é gravado (exit 2).
+    """
+    if id is None:
+        _recusar_decisao("--id é obrigatório (veja o número em 'fila listar').")
+    justificativa_limpa = (justificativa or "").strip()
+    if not justificativa_limpa:
+        _recusar_decisao("--justificativa é OBRIGATÓRIA para decidir (FR-8).")
+    autor_limpo = (autor or "").strip()
+    if not autor_limpo:
+        _recusar_decisao("--autor é OBRIGATÓRIA para decidir (FR-8).")
+    if ano is None and not excluir:
+        _recusar_decisao("a decisão precisa de um destino: --ano AAAA OU --excluir.")
+    if ano is not None and excluir:
+        _recusar_decisao("--ano e --excluir são mutuamente exclusivos: escolha UM destino.")
+    if ano is not None and not (_ANO_MINIMO <= ano <= _ANO_MAXIMO):
+        _recusar_decisao(
+            f"--ano {ano} está fora da janela 2019–2026 — ano fora da janela "
+            "nunca é aceito (Never da story)."
+        )
+
+    with uso_manifesto() as manifesto:
+        linhas = manifesto.consultar(
+            "SELECT * FROM fila_revisao WHERE id = ?", (id,)
+        )
+        if not linhas:
+            typer.echo(f"ERRO: item de fila #{id} não existe.", err=True)
+            raise typer.Exit(code=1)
+        item = linhas[0]
+        if item["status"] != "pendente":
+            typer.echo(
+                f"ERRO: item de fila #{id} já foi resolvido em "
+                f"{item['decidido_em']} por {item['autor']} — decisão humana "
+                "não é refeta.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        ok = manifesto.registrar_decisao_fila(
+            id,
+            decidido_ano=ano,
+            decidido_exclusao=excluir,
+            justificativa=justificativa_limpa,
+            autor=autor_limpo,
+            evidencia_anexa=(evidencia or "").strip() or None,
+        )
+        if not ok:
+            # corrida entre a checagem e o UPDATE — nada gravado
+            typer.echo(f"ERRO: item de fila #{id} deixou de estar pendente.", err=True)
+            raise typer.Exit(code=1)
+        manifesto.registrar_evento(
+            tipo="fila_decidida",
+            comando="fila decidir",
+            detalhe={
+                "fila_id": id,
+                "url": item["url_origem"],
+                "portal_id": item["portal_id"],
+                "motivo_original": item["motivo"],
+                "decidido_ano": ano,
+                "decidido_exclusao": excluir,
+                "justificativa": justificativa_limpa,
+                "autor": autor_limpo,
+                "evidencia_anexa": (evidencia or "").strip() or None,
+            },
+        )
+        destino = f"ano {ano} atribuído" if ano is not None else "documento marcado para EXCLUSÃO"
+        typer.echo(
+            f"Item #{id} resolvido: {destino} — autor {autor_limpo}, "
+            "decisão registrada com justificativa e data (FR-8)."
+        )
+
+
+@app.command()
 def status() -> None:
     """Resumo do Manifesto: engine, schema, contagens e últimos eventos."""
     caminho = _caminho_manifesto()
@@ -803,6 +1093,14 @@ def status() -> None:
         typer.echo(f"Seções visitadas:{manifesto.contar_secoes_visitadas()}")
         typer.echo(f"Editais (L1):    {manifesto.contar_editais()}")
         typer.echo(f"Documentos:      {manifesto.contar_documentos()}")
+        typer.echo(
+            f"Datados (CAP-3): {manifesto.contar_documentos_datados()} "
+            "(automáticos + decididos em fila)"
+        )
+        typer.echo(
+            f"Fila revisão:    {manifesto.contar_fila('pendente')} pendente(s), "
+            f"{manifesto.contar_fila('resolvida')} resolvida(s)"
+        )
         typer.echo("")
         typer.echo("Últimos eventos:")
         eventos = manifesto.ultimos_eventos(limite=10)
