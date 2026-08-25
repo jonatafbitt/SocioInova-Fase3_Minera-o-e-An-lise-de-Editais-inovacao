@@ -10,6 +10,7 @@ dependencies = [
     "requests==2.34.2",
     "beautifulsoup4==4.15.0",
     "lxml>=6.1.0,<6.2",
+    "pypdf==6.16.1",             # extrator único de texto (CAP-6, AD-11)
     "pydantic==2.13.4",
     "typer==0.27.1",
     "PyYAML>=6.0.2,<7",

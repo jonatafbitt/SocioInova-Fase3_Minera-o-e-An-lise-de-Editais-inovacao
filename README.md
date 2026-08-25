@@ -5,11 +5,12 @@ portais institucionais da **Rede Federal EPCT** — piloto de pesquisa
 acadêmica (PPGCS/UFBA). Pipeline em lotes orientado ao Manifesto SQLite;
 nenhum serviço residente, nenhum scheduler (spine AD-1).
 
-> **Escopo atual (Story 3):** fundação + Mapa-Mestre + pré-voo + descoberta
-> híbrida (CAP-2) + **coleta de PDFs** (CAP-4): download com Registro L1
-> nascido na captura, dedupe por hash intra-portal, crawl retomável e
-> suspensão de host bloqueado. Texto/datação/catálogo vêm nas stories
-> seguintes — `flag_escaneado` e `metodo_datacao` nascem NULL no L1.
+> **Escopo atual (Story 4):** fundação + Mapa-Mestre + pré-voo + descoberta
+> híbrida (CAP-2) + **coleta de PDFs** (CAP-4) + **texto por documento**
+> (CAP-6): extrator único com `.txt` irmão, `flag_escaneado` pelo limiar
+> configurável e proveniência no Manifesto (schema v4). Datação/catálogo vêm
+> nas stories seguintes — `metodo_datacao` segue NULL no L1; OCR é decisão
+> futura sob demanda (aqui só a flag).
 
 ## Instalação
 
@@ -30,8 +31,14 @@ uv run agente-editais descobrir --portal IFBA   # CAP-2 para os portais da sigla
 uv run agente-editais descobrir --todos         # CAP-2 para todos os portais
 uv run agente-editais coletar --portal IFBA     # CAP-4 para os portais da sigla
 uv run agente-editais coletar --todos           # CAP-4 para todos os portais
+uv run agente-editais textuar --portal IFBA     # CAP-6 para os portais da sigla
+uv run agente-editais textuar --todos           # CAP-6 para todos os portais
 uv run agente-editais status         # resumo do Manifesto + últimos eventos
 ```
+
+Em todos os comandos com seleção de alvo, `--portal SIGLA` é insensível a
+caixa: `--portal ifba` equivale a `--portal IFBA` (`descobrir`, `coletar`,
+`textuar`).
 
 ### Descoberta (CAP-2)
 
@@ -96,6 +103,40 @@ uv run agente-editais status         # resumo do Manifesto + últimos eventos
 - `*.corrompido-<ts>-<uuid8>.pdf` ao lado dos originais — bytes danificados
   em quarentena auditável (evento `bytes_em_quarentena`); apague após
   investigar. Nada dentro de `corpus/` é reescrito (AD-2).
+- `*.texto-tmp-*` residuais — temporários da gravação atômica do `.txt`
+  (escreve no temporário e renomeia): um crash entre write e rename pode
+  deixá-los para trás. Podem ser apagados manualmente; JAMAIS ocupam o
+  caminho canônico do `.txt` irmão, que só aparece completo ou não aparece.
+- `*.txt` ao lado dos PDFs — artefatos derivados do estágio de texto (ver
+  abaixo).
+
+### Texto (CAP-6)
+
+- **Extrator único (AD-11):** `textuar` é o único estágio que parseia PDF;
+  datação e verificação de citações consomem sua saída. Usa pypdf com
+  extração tolerante por página — página que falha rende string vazia sem
+  matar o documento; se TODAS falharem, o documento vira candidato a OCR
+  (`flag_escaneado=true` + `falha_parsing_total` no evento).
+- **`.txt` irmão:** mesmo nome/caminho do PDF com extensão `.txt`, UTF-8.
+  O PDF original fica intacto (AD-2) — o txt é artefato derivado novo.
+- **Flag escaneado:** `flag_escaneado=true` quando os caracteres extraíveis
+  ficam abaixo de `[texto] limiar_chars_por_pagina` × nº de páginas (default
+  100). OCR automático NÃO existe — a flag só sinaliza para resgate sob
+  demanda futuro.
+- **Proveniência (schema v4):** colunas `texto_caminho`, `texto_chars`,
+  `texto_paginas` e `extraido_em` em `documentos`, mais eventos
+  `texto_extraido`/`texto_escaneado`/`arquivo_ausente`/`texto_erro`. A
+  migração é `ALTER TABLE` irreversível (sem downgrade): o backup continua
+  exigindo `PRAGMA wal_checkpoint(TRUNCATE)` antes de copiar a pasta, um
+  Manifesto mais novo que o agente segue recusado no startup — versões
+  mistas do agente exigem upgrade coordenado.
+- **Retomável e idempotente:** re-executar pula documentos já extraídos cujos
+  bytes ainda batem no hash do L1 e cujo `.txt` existe — pulados não são
+  re-parseados nem re-baixados, mas os bytes locais são re-hasheados
+  (SHA-256) para verificar a vigência; documento novo ou com bytes alterados
+  é re-extraído (nova versão ⇒ novo `.txt`). Falha pontual (PDF corrompido,
+  arquivo sumido) vira evento e o lote segue — exit 0.
+- **Sem rede:** a textuação é 100% local — a janela off-peak não se aplica.
 
 ### Renderização Playwright — verificação manual opcional
 
@@ -116,9 +157,9 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 
 | Código | Significado |
 | ------ | ----------- |
-| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta e coleta com falhas por portal) |
-| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`, portal ausente do Manifesto) |
-| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar` (`--portal` vazio, `--portal` com `--todos`) |
+| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta e textuar com falhas por portal/documento) |
+| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`/`textuar`, portal ausente do Manifesto) |
+| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar`/`textuar` (`--portal` vazio, `--portal` com `--todos`) |
 | 3 | engine SQLite abaixo do guard ≥ 3.51.3 |
 | 4 | Manifesto ocupado por outro processo |
 
@@ -130,7 +171,9 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
   host), User-Agent acadêmico e knobs de crawl: cap de tamanho por documento
   (`[crawl] max_mb_documento`), prazo/timeout de download
   (`download_prazo_s`, `download_timeout_s`) e limite de 403 consecutivos
-  que suspende um host (`max_403_consecutivos`).
+  que suspende um host (`max_403_consecutivos`); além do limiar de PDF
+  escaneado (`[texto] limiar_chars_por_pagina`, default 100) usado pelo
+  extrator único.
 - `dados/manifesto.sqlite3` — Manifesto (estado único; criado no primeiro
   comando que grava). **Fora do git**; backup = copiar pasta após
   `PRAGMA wal_checkpoint(TRUNCATE)`.

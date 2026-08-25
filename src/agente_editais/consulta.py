@@ -1,19 +1,20 @@
 """CLI — superfície do pipeline em lotes (AD-1): um comando por execução.
 
 Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir``,
-``coletar`` e ``status``.
+``coletar``, ``textuar`` e ``status``.
 
 Códigos de saída:
-- 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta e coleta
-       com falhas por portal/URL — o lote segue, FR-2/CAP-4);
+- 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta
+       e textuação com falhas por portal/URL/documento — o lote segue,
+       FR-2/CAP-4/CAP-6);
 - 1  erro operacional genérico: Manifesto inexistente no ``status``,
        Manifesto mais novo que o agente, falha de abertura do banco,
        violação de janela off-peak (pré-voo exigente OU crawling),
-       sigla desconhecida no ``descobrir``/``coletar`` ou portal ausente
-       do Manifesto;
+       sigla desconhecida no ``descobrir``/``coletar``/``textuar`` ou
+       portal ausente do Manifesto;
 - 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml
        e politeness.toml (nada é escrito; banco intocado) — ou flags de
-       ``descobrir``/``coletar`` malformadas (--portal/--todos);
+       ``descobrir``/``coletar``/``textuar`` malformadas (--portal/--todos);
 - 3  engine SQLite abaixo do guard AD-10;
 - 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
 """
@@ -58,6 +59,7 @@ from .mapa import (
     hash_arquivo,
     sincronizar_mapa,
 )
+from .texto import ContextoTexto, ResumoTextoPortal, textuar_portal
 
 app = typer.Typer(
     add_completion=False,
@@ -330,12 +332,19 @@ def descobrir(
         if todos or instituicao.sigla.upper() == alvo
     ]
     if not pares:
-        siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
-        typer.echo(
-            f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
-            f"Siglas conhecidas: {siglas_conhecidas}.",
-            err=True,
-        )
+        if todos:
+            typer.echo(
+                "ERRO: nenhum portal no Mapa-Mestre — cadastre instituições e "
+                "portais no mapa antes de descobrir.",
+                err=True,
+            )
+        else:
+            siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas_conhecidas}.",
+                err=True,
+            )
         raise typer.Exit(code=1)
 
     mapa_sha256 = hash_arquivo(caminho_mapa)
@@ -507,12 +516,19 @@ def coletar(
         if todos or instituicao.sigla.upper() == alvo
     ]
     if not pares:
-        siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
-        typer.echo(
-            f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
-            f"Siglas conhecidas: {siglas_conhecidas}.",
-            err=True,
-        )
+        if todos:
+            typer.echo(
+                "ERRO: nenhum portal no Mapa-Mestre — cadastre instituições e "
+                "portais no mapa antes de coletar.",
+                err=True,
+            )
+        else:
+            siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas_conhecidas}.",
+                err=True,
+            )
         raise typer.Exit(code=1)
 
     mapa_sha256 = hash_arquivo(caminho_mapa)
@@ -645,6 +661,123 @@ def coletar(
         f"Coleta concluída: {len(resumos)} portal(is), {total_baixados} documento(s) "
         f"gravados em {raiz_corpus} "
         "(L1 completo; eventos no Manifesto; lote não abortado)."
+    )
+
+
+@app.command()
+def textuar(
+    portal: str = typer.Option(
+        None,
+        "--portal",
+        help="Sigla da instituição cujos portais serão textuados (ex.: IFBA).",
+    ),
+    todos: bool = typer.Option(False, "--todos", help="Textua todos os portais do Mapa-Mestre."),
+) -> None:
+    """CAP-6: extrai texto de cada Documento para um .txt irmão.
+
+    Extrator ÚNICO do sistema (AD-11): pypdf com extração tolerante por
+    página; ``flag_escaneado`` pelo limiar configurável ([texto]
+    ``limiar_chars_por_pagina``); proveniência gravada no Manifesto (v4).
+    Retomável e idempotente: documentos já extraídos com hash vigente são
+    pulados. NÃO faz I/O de rede — a janela off-peak não se aplica aqui.
+    Falhas por documento viram evento e o lote segue (exit 0).
+    """
+    if todos == (portal is not None):
+        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
+        raise typer.Exit(code=2)
+    if portal is not None and not portal.strip():
+        typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
+        raise typer.Exit(code=2)
+
+    mapa, caminho_mapa = _carregar_mapa_seguro()
+    polidez, caminho_polidez = _carregar_polidez_segura()
+
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, p)
+        for instituicao in mapa.instituicao
+        for p in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        if todos:
+            typer.echo(
+                "ERRO: nenhum portal no Mapa-Mestre — cadastre instituições e "
+                "portais no mapa antes de textuar.",
+                err=True,
+            )
+        else:
+            siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas_conhecidas}.",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+
+    politeness_sha256 = hash_arquivo(caminho_polidez)
+    limiar = polidez.texto_limiar_chars_por_pagina
+
+    resumos: list[ResumoTextoPortal] = []
+    totais: dict[str, int] = {}
+    with uso_manifesto() as manifesto:
+        contextos: list[ContextoTexto] = []
+        ausentes: list[str] = []
+        for instituicao, p in pares:
+            id_portal = manifesto.id_portal_por_url(p.url)
+            if id_portal is None:
+                ausentes.append(f"[{instituicao.sigla}] {p.url}")
+                continue
+            contextos.append(ContextoTexto(instituicao.sigla, p, id_portal))
+        if ausentes:
+            typer.echo(
+                "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                f"'agente-editais mapa validar' antes de textuar: {'; '.join(ausentes)}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        for contexto in contextos:
+            resumos.append(
+                textuar_portal(contexto, manifesto, limiar, comando="textuar")
+            )
+        # computado UMA vez: payload do evento e eco CLI compartilham o mesmo dict
+        totais = {
+            chave: sum(getattr(resumo, chave) for resumo in resumos)
+            for chave in ("documentos", "extraidos", "escaneados", "erros", "pulados")
+        }
+        manifesto.registrar_evento(
+            tipo="textuar_concluido",
+            comando="textuar",
+            detalhe={
+                "portais": len(resumos),
+                "alvo": "--todos" if todos else alvo,
+                "mapa_sha256": hash_arquivo(caminho_mapa),
+                "politeness_sha256": politeness_sha256,
+                "limiar_chars_por_pagina": limiar,
+                "totais": totais,
+                "urls_perdidas": [
+                    url for resumo in resumos for url in resumo.urls_perdidas
+                ],
+            },
+        )
+
+    for resumo in resumos:
+        typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+        typer.echo(
+            f"  Documentos: {resumo.documentos} "
+            f"(extraídos: {resumo.extraidos}, escaneados: {resumo.escaneados}, "
+            f"erros: {resumo.erros}, pulados: {resumo.pulados})"
+        )
+        for perdida in resumo.urls_perdidas:
+            typer.echo(f"  Perdida:    {perdida}")
+
+    typer.echo("")
+    typer.echo(
+        f"Extração concluída: {len(resumos)} portal(is), "
+        f"{totais['extraidos']} extraído(s), {totais['escaneados']} escaneado(s), "
+        f"{totais['erros']} erro(s), {totais['pulados']} pulado(s) "
+        "(.txt irmãos no corpus; eventos no Manifesto; lote não abortado)."
     )
 
 

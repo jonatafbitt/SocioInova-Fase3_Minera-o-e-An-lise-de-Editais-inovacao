@@ -82,6 +82,11 @@ class Polidez(BaseModel):
     download_timeout_s: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     # 403 seguidos que caracterizam bloqueio persistente e suspendem o host.
     max_403_consecutivos: int = Field(default=3, gt=0)
+    # CAP-6 (Story 4): limiar de PDF escaneado — caracteres extraíveis POR
+    # PÁGINA; abaixo de limiar × nº páginas o Documento recebe
+    # flag_escaneado=true. Vive em politeness.toml ([texto]) como todo knob
+    # declarativo versionado (AD-9).
+    texto_limiar_chars_por_pagina: int = Field(default=100, gt=0)
 
     @field_validator("off_peak")
     @classmethod
@@ -100,6 +105,7 @@ _CHAVES_CRAWL = (
     "download_timeout_s",
     "max_403_consecutivos",
 )
+_CHAVES_TEXTO = ("limiar_chars_por_pagina",)
 
 
 def _numero_positivo(caminho: Path, campo: str, valor: object) -> float:
@@ -128,11 +134,11 @@ def carregar_polidez(caminho: Path) -> Polidez:
     except tomllib.TOMLDecodeError as exc:
         raise ErroConfigPolidez(f"{caminho}: TOML malformado — {exc}") from exc
 
-    desconhecidas = sorted(set(dados) - set(_CHAVES_RAIZ) - {"probe", "crawl"})
+    desconhecidas = sorted(set(dados) - set(_CHAVES_RAIZ) - {"probe", "crawl", "texto"})
     if desconhecidas:
         raise ErroConfigPolidez(
             f"{caminho}: chaves desconhecidas na raiz: {', '.join(desconhecidas)}; "
-            f"aceitas: {', '.join(_CHAVES_RAIZ)}, [probe], [crawl]"
+            f"aceitas: {', '.join(_CHAVES_RAIZ)}, [probe], [crawl], [texto]"
         )
     faltantes = [chave for chave in _CHAVES_RAIZ if chave not in dados]
     if faltantes:
@@ -216,6 +222,22 @@ def carregar_polidez(caminho: Path) -> Polidez:
             f"recebido {max_403!r}."
         )
 
+    texto_bruto = dados.get("texto", {})
+    if not isinstance(texto_bruto, dict):
+        raise ErroConfigPolidez(f"{caminho}: seção '[texto]' deve ser uma tabela TOML.")
+    desconhecidas_texto = sorted(set(texto_bruto) - set(_CHAVES_TEXTO))
+    if desconhecidas_texto:
+        raise ErroConfigPolidez(
+            f"{caminho}: chaves desconhecidas em [texto]: {', '.join(desconhecidas_texto)}; "
+            f"aceitas: {', '.join(_CHAVES_TEXTO)}"
+        )
+    limiar = texto_bruto.get("limiar_chars_por_pagina", 100)
+    if isinstance(limiar, bool) or not isinstance(limiar, int) or limiar <= 0:
+        raise ErroConfigPolidez(
+            f"{caminho}: 'texto.limiar_chars_por_pagina' exige inteiro positivo, "
+            f"recebido {limiar!r}."
+        )
+
     try:
         return Polidez(
             delay_minimo_s=_numero_positivo(caminho, "delay_minimo_s", dados["delay_minimo_s"]),
@@ -233,6 +255,7 @@ def carregar_polidez(caminho: Path) -> Polidez:
             download_prazo_s=float(prazo),
             download_timeout_s=float(timeout_leitura),
             max_403_consecutivos=max_403,
+            texto_limiar_chars_por_pagina=limiar,
         )
     except ValueError as exc:
         raise ErroConfigPolidez(f"{caminho}: valor inválido — {exc}") from exc

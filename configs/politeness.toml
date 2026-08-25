@@ -40,3 +40,10 @@ timeout_s = 10
 # O probe do pré-voo é checagem leve de alcançabilidade (FR-2), não crawl:
 # a janela obrigatória do crawling vive na seção [crawl] acima.
 respeitar_janela_off_peak = false
+
+[texto]
+# CAP-6 (Story 4): limiar de PDF escaneado — um Documento recebe
+# flag_escaneado=true quando os caracteres extraíveis ficam ABAIXO de
+# (limiar × nº de páginas). O OCR é decisão futura sob demanda: aqui só a
+# flag. Consumido pelo extrator único (texto.py, AD-11).
+limiar_chars_por_pagina = 100

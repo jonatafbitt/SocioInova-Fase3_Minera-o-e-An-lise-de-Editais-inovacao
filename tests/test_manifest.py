@@ -13,6 +13,7 @@ from agente_editais.manifest import (
     ENGINE_MINIMA,
     _MIGRACAO_V1,
     _MIGRACAO_V2,
+    _MIGRACAO_V3,
     ErroAberturaManifesto,
     ErroEngineIncompativel,
     ErroManifestoOcupado,
@@ -54,7 +55,7 @@ def test_engine_no_minimo_passa(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sqlite3, "sqlite_version_info", ENGINE_MINIMA)
     manifesto = Manifesto(tmp_path / "m.sqlite3")
     try:
-        assert manifesto.schema_version() == 3  # v1 + v2 (CAP-2) + v3 (CAP-4)
+        assert manifesto.schema_version() == 4  # v1 + v2 + v3 + v4 (CAP-6)
     finally:
         manifesto.fechar()
 
@@ -100,7 +101,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
     primeira = Manifesto(caminho)
     try:
         assert primeira.consultar("PRAGMA journal_mode")[0][0] == "wal"
-        assert primeira.schema_version() == 3
+        assert primeira.schema_version() == 4
         objetos = primeira.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         )
@@ -109,7 +110,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
 
     segunda = Manifesto(caminho)
     try:
-        assert segunda.schema_version() == 3
+        assert segunda.schema_version() == 4
         assert segunda.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         ) == objetos
@@ -144,7 +145,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 3
+        assert manifesto.schema_version() == 4
         assert manifesto.contar_instituicoes() == 1, "dados v1 preservados"
         assert manifesto.contar_portais() == 1
         # tabelas da v2/v3 utilizáveis imediatamente após a migração
@@ -160,7 +161,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
     objetos_antes: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 3  # idempotente
+        assert reaberto.schema_version() == 4  # idempotente
         objetos_antes = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -178,8 +179,8 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
         terceira.fechar()
 
 
-def test_migracao_v2_para_v3_preserva_dados_e_eh_idempotente(tmp_path) -> None:
-    """Banco da Story 2 (v2) abre na v3 com candidatos intactos e v3 utilizável."""
+def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> None:
+    """Banco da Story 2 (v2) abre na versão atual com candidatos intactos."""
     caminho = tmp_path / "story2.sqlite3"
     bruto = sqlite3.connect(caminho)
     try:
@@ -209,7 +210,7 @@ def test_migracao_v2_para_v3_preserva_dados_e_eh_idempotente(tmp_path) -> None:
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 3
+        assert manifesto.schema_version() == 4
         assert manifesto.contar_candidatos() == 1, "candidatos v2 preservados"
         # v3 utilizável: retomada enxerga o candidato herdado
         pendentes = manifesto.candidatos_pdf_do_portal(1)
@@ -222,7 +223,7 @@ def test_migracao_v2_para_v3_preserva_dados_e_eh_idempotente(tmp_path) -> None:
     objetos_v3: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 3  # idempotente
+        assert reaberto.schema_version() == 4  # idempotente
         objetos_v3 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -237,6 +238,97 @@ def test_migracao_v2_para_v3_preserva_dados_e_eh_idempotente(tmp_path) -> None:
         ) == objetos_v3
     finally:
         terceira.fechar()
+
+
+def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_path) -> None:
+    """Banco da Story 3 (v3) abre na v4 com documentos intactos e colunas de texto.
+
+    As quatro colunas da v4 nascem NULL; ``registrar_texto_extraido`` (UPDATE
+    do estágio texto, AD-11) preenche proveniência + ``flag_escaneado`` da v3.
+    """
+    caminho = tmp_path / "story3.sqlite3"
+    bruto = sqlite3.connect(caminho)
+    try:
+        for declaracao in (*_MIGRACAO_V1, *_MIGRACAO_V2, *_MIGRACAO_V3):
+            bruto.execute(declaracao)
+        bruto.execute(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('S3', 'Instituição Story 3', '2026-01-01T00:00:00+00:00')"
+        )
+        bruto.execute(
+            """
+            INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+            VALUES ('s3-2023-edital-x', 1, 2023, '2026-03-03T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO documentos (
+                id, edital_id, url_origem, caminho, hash_sha256, data_captura,
+                ano_provisorio, versao_crawler
+            ) VALUES ('abc123456789', 's3-2023-edital-x', 'http://s3.org/x.pdf',
+                      'corpus/S3/2023/abc123456789-edital-x.pdf',
+                      'a' * 64, '2026-03-03T01:00:00+00:00', 2023, '0.1.0')
+            """
+        )
+        bruto.execute("PRAGMA user_version = 3")
+        bruto.commit()
+    finally:
+        bruto.close()
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 4
+        colunas = {
+            linha["name"]
+            for linha in manifesto.consultar("PRAGMA table_info(documentos)")
+        }
+        assert {
+            "texto_caminho",
+            "texto_chars",
+            "texto_paginas",
+            "extraido_em",
+        } <= colunas, "as 4 colunas de texto da v4 existem"
+        (documento,) = manifesto.consultar("SELECT * FROM documentos")
+        assert documento["flag_escaneado"] is None, "v4 não toca a flag da v3 na migração"
+        assert documento["texto_caminho"] is None and documento["extraido_em"] is None
+
+        # v4 utilizável imediatamente: UPDATE de proveniência do estágio texto
+        manifesto.registrar_texto_extraido(
+            "abc123456789",
+            "http://s3.org/x.pdf",
+            texto_caminho="corpus/S3/2023/abc123456789-edital-x.txt",
+            texto_chars=1200,
+            texto_paginas=12,
+            flag_escaneado=True,
+        )
+        (texto,) = manifesto.consultar("SELECT * FROM documentos")
+        assert texto["texto_chars"] == 1200
+        assert texto["texto_paginas"] == 12
+        assert texto["flag_escaneado"] == 1, "coluna nascida NULL na v3 é preenchida"
+        assert texto["extraido_em"] is not None
+    finally:
+        manifesto.fechar()
+
+    objetos_v4: list | None = None
+    reaberto = Manifesto(caminho)
+    try:
+        assert reaberto.schema_version() == 4  # idempotente
+        objetos_v4 = reaberto.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        (documento,) = reaberto.consultar("SELECT * FROM documentos")
+        assert documento["texto_caminho"].endswith(".txt"), "proveniência persiste"
+    finally:
+        reaberto.fechar()
+
+    quarta = Manifesto(caminho)
+    try:
+        assert quarta.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ) == objetos_v4
+    finally:
+        quarta.fechar()
 
 
 def test_schema_v3_guarda_integridade_de_documentos(tmp_path) -> None:
@@ -435,7 +527,7 @@ def test_status_happy_path_exit0_com_contagens(cli, configs_reais_no_tmp) -> Non
     assert resultado.exit_code == 0, resultado.output
     saida = resultado.output + (resultado.stderr or "")
     assert "SQLite engine:" in saida
-    assert "Schema version:  3" in saida
+    assert "Schema version:  4" in saida
     assert re.search(r"Instituições:\s+\d+", saida)
     assert re.search(r"Portais:\s+\d+", saida)
     # contagens da descoberta visíveis no status

@@ -21,6 +21,12 @@ vale só DENTRO do portal). Versões novas de um documento em evolução ligam-s
 por ``predecessor_id``; ``flag_escaneado`` e ``metodo_datacao`` nascem NULL
 e são preenchidos pelas stories seguintes (pipeline em estágios, C5).
 
+Story 4 adiciona a migração v4 (CAP-6): colunas de proveniência do texto em
+``documentos`` — ``texto_caminho``/``texto_chars``/``texto_paginas``/
+``extraido_em``. ``texto.py`` é o ÚNICO escritor destas colunas e da
+``flag_escaneado`` (nascida NULL na v3) via UPDATE (AD-11: demais estágios
+nunca INSERT em ``documentos``).
+
 Convenções do spine: placeholders qmark; datas como texto ISO 8601 com
 timezone; tabelas no plural; nenhuma API removida/deprecada do Python 3.14.
 """
@@ -37,7 +43,7 @@ from typing import Any
 ENGINE_MINIMA = (3, 51, 3)
 LOCK_TIMEOUT_MS = 1_500
 
-SCHEMA_VERSAO_ATUAL = 3
+SCHEMA_VERSAO_ATUAL = 4
 
 # Cada declaração é executada isoladamente dentro da transação exclusiva de
 # startup — gatilhos têm ';' no corpo e não podem ser divididos por split.
@@ -152,10 +158,21 @@ _MIGRACAO_V3: tuple[str, ...] = (
     "CREATE INDEX idx_documentos_url_origem ON documentos(url_origem)",
 )
 
+# Story 4 (CAP-6): proveniência do texto — colunas que ``texto.py`` preenche
+# via UPDATE quando extrai um Documento. ``flag_escaneado`` NÃO entra aqui:
+# ela nasceu na v3 (NULL) e é apenas PREENCHIDA pelo extrator único.
+_MIGRACAO_V4: tuple[str, ...] = (
+    "ALTER TABLE documentos ADD COLUMN texto_caminho TEXT",
+    "ALTER TABLE documentos ADD COLUMN texto_chars INTEGER",
+    "ALTER TABLE documentos ADD COLUMN texto_paginas INTEGER",
+    "ALTER TABLE documentos ADD COLUMN extraido_em TEXT",
+)
+
 MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (1, _MIGRACAO_V1),
     (2, _MIGRACAO_V2),
     (3, _MIGRACAO_V3),
+    (4, _MIGRACAO_V4),
 )
 
 
@@ -480,6 +497,67 @@ class Manifesto:
 
     def contar_documentos(self) -> int:
         return int(self.consultar("SELECT COUNT(*) FROM documentos")[0][0])
+
+    # -- texto (CAP-6, migração v4) ------------------------------------------
+
+    def documentos_do_portal(self, portal_id: int) -> list[sqlite3.Row]:
+        """Documentos ligados ao portal VIA ``candidatos`` tipo 'pdf' (lote estável).
+
+        Mesma costura coleta→portal da captura e MESMA regra de membria de
+        ``candidatos_pdf_do_portal`` (tipo = 'pdf'); a subquery DISTINCT protege
+        contra fan-out caso a mesma URL apareça mais de uma vez nos candidatos
+        do portal. O estágio de texto não cria Documento (AD-11), apenas os
+        consome na ordem em que nasceram (``rowid``).
+        """
+        return self.consultar(
+            """
+            SELECT d.* FROM documentos d
+            JOIN (
+                SELECT DISTINCT url FROM candidatos
+                WHERE portal_id = ? AND tipo = 'pdf'
+            ) c ON c.url = d.url_origem
+            ORDER BY d.rowid
+            """,
+            (portal_id,),
+        )
+
+    def registrar_texto_extraido(
+        self,
+        documento_id: str,
+        url_origem: str,
+        *,
+        texto_caminho: str,
+        texto_chars: int,
+        texto_paginas: int,
+        flag_escaneado: bool,
+    ) -> bool:
+        """UPDATE de proveniência do estágio texto (AD-11: nunca INSERT aqui).
+
+        Preenche as colunas da v4 e a ``flag_escaneado`` nascida NULL na v3;
+        ``extraido_em`` vai NORMALIZADO em UTC (mesma convenção de
+        ``data_captura`` — carimbo comparável entre fusos). Retorna True só se
+        alguma linha casou — UPDATE de 0 linhas NÃO é sucesso silencioso: o
+        chamador trata como erro de persistência.
+        """
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE documentos
+                SET texto_caminho = ?, texto_chars = ?, texto_paginas = ?,
+                    flag_escaneado = ?, extraido_em = ?
+                WHERE id = ? AND url_origem = ?
+                """,
+                (
+                    texto_caminho,
+                    texto_chars,
+                    texto_paginas,
+                    1 if flag_escaneado else 0,
+                    agora_iso_utc(),
+                    documento_id,
+                    url_origem,
+                ),
+            )
+            return cursor.rowcount > 0
 
     # -- ciclo de vida -----------------------------------------------------
 
