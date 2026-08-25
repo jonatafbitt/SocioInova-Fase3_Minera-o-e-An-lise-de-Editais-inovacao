@@ -38,6 +38,13 @@ NULL com CHECK de janela e só é preenchido VIA ``aplicar_datacao`` (UPDATE,
 AD-11); ``candidatos.texto_ancora`` preserva a âncora desde a descoberta
 (FR-6 nasce na origem) — corpus antigo fica NULL = fonte indisponível.
 
+Story 6 adiciona superfícies ONLY-leitura de consulta (CAP-9/UJ-3/§10):
+``listar_l1`` (unidade = Documento com ano EFETIVO ``COALESCE(ano_aceito,
+decidido_ano)`` e origem explícita ``ano_fonte``, excluídos fora da
+listagem mas contáveis) e ``custodia_do_edital`` (cadeia captura →
+datação → fila montada inteira do banco — nenhum PDF é lido, AD-4).
+Nenhuma migração nova: schema v5 vigente.
+
 Convenções do spine: placeholders qmark; datas como texto ISO 8601 com
 timezone; tabelas no plural; nenhuma API removida/deprecada do Python 3.14.
 """
@@ -50,6 +57,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from agente_editais import __version__
 
 ENGINE_MINIMA = (3, 51, 3)
 LOCK_TIMEOUT_MS = 1_500
@@ -233,6 +242,117 @@ MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (4, _MIGRACAO_V4),
     (5, _MIGRACAO_V5),
 )
+
+
+# -- consulta L1 (CAP-9/UJ-3/§10): definição ÚNICA compartilhada pelas leituras
+#
+# Ano EFETIVO = aceite automático OU decisão humana da fila (deferred-work D1
+# parcialmente endereçado na LEITURA — a fila segue sendo a fonte de verdade
+# das decisões humanas; nenhum dado é migrado). Membresia documento→portal é
+# VIA ``candidatos`` (mesma costura da captura, tipo='pdf'); o GROUP BY por
+# url garante UMA linha por documento mesmo se a mesma URL já foi registrada
+# em dois portais — contagens coerentes nunca fan-out.
+#
+# Precedência ÚNICA por URL na fila (_FILA_VIGENTE, patch 3): uma única linha
+# de ``fila_revisao`` entra no jogo — RESOLVIDA vence PENDENTE; entre múltiplas
+# resolvidas, a de MAIOR id (decisão mais recente); sem resolvida, a pendente
+# mais recente (ano segue vazio de qualquer forma). A subquery é COMPARTILHADA
+# por ``listar_l1``, ``contar_l1_excluidos`` e ``custodia_do_edital`` — listar
+# e custódia nunca divergem sobre qual decisão vale. A exclusão passa a ser
+# decidida pela linha VIGENTE (não por EXISTS-any), mantendo listagem e
+# resumo consistentes mesmo em patologias de duas resoluções na mesma URL.
+_FILA_VIGENTE = """
+    SELECT url_origem,
+           CASE WHEN MAX(CASE WHEN status = 'resolvida' THEN id END) IS NOT NULL
+                THEN MAX(CASE WHEN status = 'resolvida' THEN id END)
+                ELSE MAX(id)
+           END AS id_fila_vigente
+    FROM fila_revisao
+    GROUP BY url_origem
+"""
+
+_L1_ANO_EFETIVO = "COALESCE(d.ano_aceito, f.decidido_ano)"
+
+_L1_FONTE_ANO = """
+CASE
+    WHEN d.ano_aceito IS NOT NULL THEN 'automatica'
+    WHEN f.decidido_ano IS NOT NULL THEN 'fila_humana'
+    ELSE 'vazio'
+END"""
+
+_L1_JOINS = f"""
+FROM documentos d
+JOIN editais e ON e.id = d.edital_id
+JOIN instituicoes i ON i.id = e.instituicao_id
+LEFT JOIN (
+    SELECT url, MIN(portal_id) AS portal_id
+    FROM candidatos
+    WHERE tipo = 'pdf'
+    GROUP BY url
+) c ON c.url = d.url_origem
+LEFT JOIN portais p ON p.id = c.portal_id
+LEFT JOIN ({_FILA_VIGENTE}) fv ON fv.url_origem = d.url_origem
+LEFT JOIN fila_revisao f ON f.id = fv.id_fila_vigente
+"""
+
+# Exclusão decidida SOMENTE pela linha vigente do join (≤ 1 linha por URL):
+# pendentes/ausentes ⇒ 0; decisão vigente de exclusão ⇒ 1.
+_L1_EXCLUIDO_VIGENTE = "COALESCE(f.decidido_exclusao, 0) = 1"
+_L1_NAO_EXCLUIDO_VIGENTE = "COALESCE(f.decidido_exclusao, 0) = 0"
+
+# Ordenação com anos vazios POR ÚLTIMO (patch 9): NULLs primeiro fariam os
+# pendentes dominarem o topo da listagem.
+_L1_ORDEM = (
+    f"ORDER BY CASE WHEN {_L1_ANO_EFETIVO} IS NULL THEN 1 ELSE 0 END, "
+    "i.sigla, ano, d.edital_id, d.id, d.url_origem"
+)
+
+_L1_COLUNAS = f"""
+    d.id AS documento_id,
+    d.edital_id,
+    i.sigla AS instituicao,
+    p.categoria,
+    {_L1_ANO_EFETIVO} AS ano,
+    {_L1_FONTE_ANO} AS ano_fonte,
+    d.metodo_datacao,
+    d.url_origem,
+    d.data_captura,
+    d.hash_sha256,
+    d.caminho
+"""
+
+
+def _filtros_l1(
+    instituicao: str | None,
+    ano: int | None,
+    categoria: str | None,
+    *,
+    excluidos: bool,
+    ignorar_ano: bool = False,
+) -> tuple[str, tuple]:
+    """WHERE compartilhado da consulta L1 — MESMA definição de linhas sempre.
+
+    ``excluidos=False`` lista os publicáveis (exclusão NÃO decidida na linha
+    vigente); ``True`` devolve só os excluídos — população do resumo, nunca
+    silenciada. Filtros combinam por E (AND); ``None`` = filtro ausente.
+    ``ignorar_ano=True`` (usado pela contagem de excluídos, patch 4) aplica
+    instituição/categoria mas IGNORA o filtro de ano: a população excluída
+    não participa da janela de listagem — com ``--ano``, o resumo continua
+    honesto em vez de reportar "excluídos: 0" enganoso.
+    """
+    predicado_exclusao = _L1_EXCLUIDO_VIGENTE if excluidos else _L1_NAO_EXCLUIDO_VIGENTE
+    clausulas = [predicado_exclusao]
+    parametros: list[Any] = []
+    if instituicao is not None:
+        clausulas.append("UPPER(i.sigla) = UPPER(?)")
+        parametros.append(instituicao)
+    if ano is not None and not ignorar_ano:
+        clausulas.append(f"{_L1_ANO_EFETIVO} = ?")
+        parametros.append(ano)
+    if categoria is not None:
+        clausulas.append("p.categoria = ?")
+        parametros.append(categoria)
+    return " AND ".join(clausulas), tuple(parametros)
 
 
 class ErroEngineIncompativel(RuntimeError):
@@ -847,6 +967,142 @@ class Manifesto:
             """,
             (url_origem,),
         )
+
+    # -- consulta (CAP-9/UJ-3/§10): leituras ONLY (AD-3/AD-4: fonte única) ----
+
+    def listar_l1(
+        self,
+        *,
+        instituicao: str | None = None,
+        ano: int | None = None,
+        categoria: str | None = None,
+    ) -> list[sqlite3.Row]:
+        """Documentos NÃO excluídos com ano EFETIVO e sua origem (FR-20).
+
+        Unidade = DOCUMENTO (``edital_id`` é coluna; agregar por Edital fica
+        para decisão futura). ``ano`` = COALESCE(ano_aceito, decidido_ano) e
+        ``ano_fonte`` ∈ {automatica, fila_humana, vazio} — pendentes na fila
+        aparecem com ano vazio (e POR ÚLTIMO na ordenação); excluídos ficam
+        FORA da listagem (conte-os com ``contar_l1_excluidos``, mesma
+        definição de linhas). A fila entra pela linha VIGENTE por URL (uma
+        única decisão: resolvida vence pendente, maior id entre resolvidas)
+        — nunca há duplicação nem divergência com a custódia. Leitura pura:
+        nenhum parseio de PDF, nenhum acesso ao corpus (AD-4).
+        """
+        clausulas, parametros = _filtros_l1(instituicao, ano, categoria, excluidos=False)
+        return self.consultar(
+            f"SELECT {_L1_COLUNAS} {_L1_JOINS} WHERE {clausulas} {_L1_ORDEM}",
+            parametros,
+        )
+
+    def contar_l1_excluidos(
+        self,
+        *,
+        instituicao: str | None = None,
+        ano: int | None = None,
+        categoria: str | None = None,
+    ) -> int:
+        """Excluídos sob os filtros informados, IGNORANDO o filtro de ano.
+
+        Mesma definição de linhas de ``listar_l1`` com o predicado invertido.
+        O ``--ano`` NÃO se aplica aqui (patch 4): a população excluída não
+        participa da janela de listagem (decisão de exclusão não tem ano) —
+        com ``--ano 2024`` o resumo continua mostrando quantos foram
+        excluídos na instituição/categoria pedida, em vez de um "excluídos:
+        0" enganoso.
+        """
+        clausulas, parametros = _filtros_l1(
+            instituicao, ano, categoria, excluidos=True, ignorar_ano=True
+        )
+        return int(
+            self.consultar(f"SELECT COUNT(*) {_L1_JOINS} WHERE {clausulas}", parametros)[0][0]
+        )
+
+    def custodia_do_edital(self, edital_id: str) -> dict[str, Any] | None:
+        """Cadeia de custódia §10 do Edital: captura → datação → fila.
+
+        Montado INTEGRAMENTE a partir do Manifesto (AD-3/AD-4): nenhum PDF
+        nem arquivo do corpus é lido. Devolve ``None`` quando o edital não
+        existe (edital existente SEM documentos devolve ``documentos: []``).
+        O bloco ``fila`` usa a MESMA linha vigente por URL da listagem
+        (resolvida vence pendente; maior id entre resolvidas) — listar e
+        custódia nunca divergem.
+        """
+        linhas_edital = self.consultar(
+            """
+            SELECT e.id AS edital_id, e.criado_em, i.sigla AS instituicao
+            FROM editais e
+            JOIN instituicoes i ON i.id = e.instituicao_id
+            WHERE e.id = ?
+            """,
+            (edital_id,),
+        )
+        if not linhas_edital:
+            return None
+        dados: dict[str, Any] = dict(linhas_edital[0])
+        # Metadados autodescritivos (§10 "quem capturou"): quando foi gerado,
+        # com qual versão do agente e sobre qual schema do Manifesto.
+        dados["gerado_em"] = agora_iso_utc()
+        dados["versao_agente"] = __version__
+        dados["schema_version"] = self.schema_version()
+        documentos = self.consultar(
+            "SELECT * FROM documentos WHERE edital_id = ? "
+            "ORDER BY data_captura, id, url_origem",
+            (edital_id,),
+        )
+        documentos_saida: list[dict[str, Any]] = []
+        for documento in documentos:
+            url = documento["url_origem"]
+            evidencias = [
+                {
+                    "fonte": evidencia["fonte"],
+                    "valor_bruto": evidencia["valor_bruto"],
+                    "localizacao": evidencia["localizacao"],
+                }
+                for evidencia in self.evidencias_da_url(url)
+            ]
+            itens_fila = self.consultar(
+                f"""
+                SELECT f.* FROM fila_revisao f
+                JOIN ({_FILA_VIGENTE}) fv ON fv.id_fila_vigente = f.id
+                WHERE f.url_origem = ?
+                """,
+                (url,),
+            )
+            fila: dict[str, Any] | None = None
+            if itens_fila:
+                # a subquery vigente devolve NO MÁXIMO uma linha por URL
+                item = itens_fila[0]
+                fila = {
+                    "status": item["status"],
+                    "motivo": item["motivo"],
+                    "decidido_ano": item["decidido_ano"],
+                    "decidido_exclusao": bool(item["decidido_exclusao"]),
+                    "justificativa": item["justificativa"],
+                    "autor": item["autor"],
+                    "decidido_em": item["decidido_em"],
+                }
+            documentos_saida.append(
+                {
+                    "documento_id": documento["id"],
+                    "captura": {
+                        "data_captura": documento["data_captura"],
+                        "hash_sha256": documento["hash_sha256"],
+                        "url_origem": url,
+                        "versao_crawler": documento["versao_crawler"],
+                        "caminho": documento["caminho"],
+                        "predecessor_id": documento["predecessor_id"],
+                    },
+                    "datacao": {
+                        "metodo_datacao": documento["metodo_datacao"],
+                        "ano_aceito": documento["ano_aceito"],
+                        "evidencias": evidencias,
+                    },
+                    "fila": fila,
+                }
+            )
+        dados["documentos"] = documentos_saida
+        return dados
 
     # -- ciclo de vida -----------------------------------------------------
 

@@ -1,22 +1,34 @@
 """Infra de testes: servidor HTTP local fake (polidez testada contra ele,
-convenção §Testes do spine) e fixtures de ambiente isolado."""
+convenção §Testes do spine) e fixtures de ambiente isolado.
+
+A partir da Story 6, os builders compartilhados entre suítes vivem AQUI com
+nomes públicos — ``test_texto``/``test_datacao``/``test_consulta`` deixam de
+se importar mutuamente.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import http.server
+import json
 import logging
 import shutil
 import socket
 import sys
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pypdf import PageObject, PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from typer.testing import CliRunner
 
 from agente_editais import fetcher
+from agente_editais.consulta import app
+from agente_editais.manifest import Manifesto
 
 logger = logging.getLogger(__name__)
 
@@ -339,3 +351,192 @@ def mapa_minimo(
         url_portal=url_portal,
         seeds=sementes,
     )
+
+
+# -- builders compartilhados entre suítes (nomes públicos) ---------------------------
+#
+# Fixtures de PDF são GERADAS em memória com pypdf (Design Notes das stories):
+# nada de binário commitado. Os fluxos usam a pipeline real contra o servidor
+# fake — Documentos legítimos nascem no L1 como em produção.
+
+
+def pagina_com_texto(escritor: PdfWriter, conteudo: str) -> PageObject:
+    """Página com stream clássico 'BT/Tj/ET' — texto extraível pelo pypdf."""
+    pagina = PageObject.create_blank_page(None, 612, 792)
+    fluxo = DecodedStreamObject()
+    fluxo.set_data(f"BT /F1 24 Tf 72 720 Td ({conteudo}) Tj ET".encode("latin-1"))
+    referencia_fluxo = escritor._add_object(fluxo)
+    fonte = DictionaryObject()
+    fonte[NameObject("/Type")] = NameObject("/Font")
+    fonte[NameObject("/Subtype")] = NameObject("/Type1")
+    fonte[NameObject("/BaseFont")] = NameObject("/Helvetica")
+    referencia_fonte = escritor._add_object(fonte)
+    recursos = DictionaryObject()
+    recursos[NameObject("/Font")] = DictionaryObject(
+        {NameObject("/F1"): referencia_fonte}
+    )
+    pagina[NameObject("/Resources")] = recursos
+    pagina[NameObject("/Contents")] = referencia_fluxo
+    return pagina
+
+
+def pdf_com_texto(paginas: list[str]) -> bytes:
+    """PDF nativo mínimo com N páginas de texto real."""
+    escritor = PdfWriter()
+    for conteudo in paginas:
+        escritor.add_page(pagina_com_texto(escritor, conteudo))
+    buffer = BytesIO()
+    escritor.write(buffer)
+    return buffer.getvalue()
+
+
+def pdf_apenas_imagem(paginas: int = 2) -> bytes:
+    """Simula PDF escaneado: páginas SEM stream de texto (extração ~0 chars)."""
+    escritor = PdfWriter()
+    for _ in range(paginas):
+        escritor.add_blank_page(width=612, height=792)
+    buffer = BytesIO()
+    escritor.write(buffer)
+    return buffer.getvalue()
+
+
+def pdf_com_docinfo(
+    paginas: list[str],
+    *,
+    criado_em: str | None = None,
+    modificado_em: str | None = None,
+    titulo: str | None = None,
+) -> bytes:
+    """PDF nativo mínimo com docinfo controlado pela história de teste."""
+    escritor = PdfWriter()
+    for conteudo in paginas:
+        escritor.add_page(pagina_com_texto(escritor, conteudo))
+    metadados = {}
+    if criado_em:
+        metadados["/CreationDate"] = criado_em
+    if modificado_em:
+        metadados["/ModDate"] = modificado_em
+    if titulo:
+        metadados["/Title"] = titulo
+    if metadados:
+        escritor.add_metadata(metadados)
+    buffer = BytesIO()
+    escritor.write(buffer)
+    return buffer.getvalue()
+
+
+def longo(semente: str) -> str:
+    """Página 'nativa': texto ACIMA do limiar default (100 chars/página)."""
+    return (
+        f"{semente} - trecho de conteudo textual para extracao "
+        "acima do limiar de escaneamento configurado no repositorio"
+    ) * 2
+
+
+def html_lista(links: list[tuple[str, str]]) -> str:
+    """Página de listagem com âncoras (href, texto) — gatilho da descoberta."""
+    corpo = "".join(f'<p><a href="{href}">{texto}</a></p>' for href, texto in links)
+    return f"<html><body><h1>Editais</h1>{corpo}</body></html>"
+
+
+def mapa_portal(servidor: http.server.ThreadingHTTPServer, *, sigla: str = "TST") -> str:
+    """Bloco TOML de UM portal apontando para o servidor fake."""
+    return (
+        f'[[instituicao]]\nsigla = "{sigla}"\nnome = "Instituto de Teste {sigla}"\n\n'
+        f'  [[instituicao.portal]]\n  nome = "Portal {sigla}"\n'
+        f'  categoria = "integra"\n  url = "{url_do(servidor)}"\n'
+        f'  seeds = ["{url_do(servidor)}"]\n'
+    )
+
+
+def registrar_candidatos(
+    servidor: http.server.ThreadingHTTPServer,
+    caminho_manifesto: Path,
+    caminhos: list[str],
+) -> None:
+    """Registra candidatos tipo 'pdf' direto no Manifesto (sem descoberta)."""
+    with Manifesto(caminho_manifesto) as manifesto:
+        portal_id = manifesto.id_portal_por_url(url_do(servidor))
+        assert portal_id is not None, "rode 'mapa validar' antes"
+        for caminho in caminhos:
+            assert manifesto.registrar_candidato(
+                portal_id, url_do(servidor, caminho), "pdf"
+            )
+
+
+def coletar_pdfs(
+    cli,
+    politeness_veloz: SimpleNamespace,
+    servidor_fake: http.server.ThreadingHTTPServer,
+    corpos: dict[str, bytes],
+) -> None:
+    """Pipeline real até o L1: mapa validar → candidatos → coletar."""
+    for caminho, corpo in corpos.items():
+        servidor_fake.paginas[caminho] = (200, "application/pdf", corpo)
+    escrever_mapa(politeness_veloz, mapa_portal(servidor_fake))
+    assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
+    registrar_candidatos(servidor_fake, politeness_veloz.manifesto, list(corpos))
+    assert cli.invoke(app, ["coletar", "--portal", "TST"]).exit_code == 0
+
+
+def descobrir_coletar(
+    cli,
+    politeness_veloz: SimpleNamespace,
+    servidor_fake: http.server.ThreadingHTTPServer,
+    *,
+    html: str,
+    pdfs: dict[str, bytes],
+) -> None:
+    """Pipeline real COM descoberta: âncora persistida desde a origem (FR-6).
+
+    O HTML declara ``charset=utf-8`` — sem charset o requests assume
+    ISO-8859-1 e a âncora chegaria duplo-codificada ao banco.
+    """
+    servidor_fake.paginas["/ok"] = (200, "text/html; charset=utf-8", html)
+    for caminho, corpo in pdfs.items():
+        servidor_fake.paginas[caminho] = (200, "application/pdf", corpo)
+    escrever_mapa(politeness_veloz, mapa_portal(servidor_fake))
+    assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
+    assert cli.invoke(app, ["descobrir", "--portal", "TST"]).exit_code == 0
+    assert cli.invoke(app, ["coletar", "--portal", "TST"]).exit_code == 0
+
+
+def documentos_do_manifesto(caminho_manifesto: Path) -> list[dict]:
+    """Linhas de ``documentos`` em ordem estável por URL de origem."""
+    with Manifesto(caminho_manifesto) as manifesto:
+        return [
+            dict(linha)
+            for linha in manifesto.consultar(
+                "SELECT * FROM documentos ORDER BY url_origem"
+            )
+        ]
+
+
+def fila_do_manifesto(caminho_manifesto: Path) -> list[dict]:
+    """Itens da fila de revisão em TODOS os status, na ordem de criação."""
+    with Manifesto(caminho_manifesto) as manifesto:
+        return [dict(linha) for linha in manifesto.consultar_fila(None)]
+
+
+def tipos_eventos(caminho_manifesto: Path) -> list[tuple[str, dict]]:
+    """Eventos append-only como ``(tipo, detalhe)`` na ordem de gravação."""
+    with Manifesto(caminho_manifesto) as manifesto:
+        return [
+            (linha["tipo"], json.loads(linha["detalhe"]))
+            for linha in manifesto.consultar(
+                "SELECT tipo, detalhe FROM eventos ORDER BY id"
+            )
+        ]
+
+
+def saida_cli(resultado) -> str:
+    """stdout + stderr do CliRunner (qualquer versão do typer/click)."""
+    return resultado.output + (resultado.stderr or "")
+
+
+@pytest.fixture
+def corpus(politeness_veloz, monkeypatch):
+    """Raiz do corpus isolada no tmp (coletar/textuar nunca tocam o repo)."""
+    raiz = politeness_veloz.configs.parent / "corpus"
+    monkeypatch.setenv("AGENTE_EDITAIS_CORPUS", str(raiz))
+    return raiz

@@ -2,20 +2,17 @@
 .txt irmão, flag de escaneado pelo limiar e retomada idempotente.
 
 Fixtures de PDF são GERADAS em memória com pypdf (Design Notes da story):
-nada de binário commitado. O fluxo de teste usa a pipeline real — coletar
-contra o servidor fake local — para nascerem Documentos legítimos no L1.
+nada de binário commitado — os builders vivem em ``conftest``. O fluxo de
+teste usa a pipeline real — coletar contra o servidor fake local — para
+nascerem Documentos legítimos no L1.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
-from io import BytesIO
 from pathlib import Path
 
 import pytest
-from pypdf import PageObject, PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from agente_editais.consulta import app
 from agente_editais.fetcher import carregar_polidez
@@ -27,121 +24,23 @@ from agente_editais.texto import (
     ja_extraido,
 )
 
-from .conftest import CONFIGS_DO_REPO, escrever_mapa, url_do
+from .conftest import (
+    CONFIGS_DO_REPO,
+    coletar_pdfs,
+    documentos_do_manifesto,
+    escrever_mapa,
+    longo,
+    mapa_portal,
+    pdf_apenas_imagem,
+    pdf_com_texto,
+    registrar_candidatos,
+    saida_cli,
+    tipos_eventos,
+    url_do,
+)
 
 
-# -- fixtures de PDF geradas em memória -------------------------------------------
-
-
-def _pagina_com_texto(escritor: PdfWriter, conteudo: str) -> PageObject:
-    """Página com stream clássico 'BT/Tj/ET' — texto extraível pelo pypdf."""
-    pagina = PageObject.create_blank_page(None, 612, 792)
-    fluxo = DecodedStreamObject()
-    fluxo.set_data(f"BT /F1 24 Tf 72 720 Td ({conteudo}) Tj ET".encode("latin-1"))
-    referencia_fluxo = escritor._add_object(fluxo)
-    fonte = DictionaryObject()
-    fonte[NameObject("/Type")] = NameObject("/Font")
-    fonte[NameObject("/Subtype")] = NameObject("/Type1")
-    fonte[NameObject("/BaseFont")] = NameObject("/Helvetica")
-    referencia_fonte = escritor._add_object(fonte)
-    recursos = DictionaryObject()
-    recursos[NameObject("/Font")] = DictionaryObject(
-        {NameObject("/F1"): referencia_fonte}
-    )
-    pagina[NameObject("/Resources")] = recursos
-    pagina[NameObject("/Contents")] = referencia_fluxo
-    return pagina
-
-
-def pdf_com_texto(paginas: list[str]) -> bytes:
-    """PDF nativo mínimo com N páginas de texto real."""
-    escritor = PdfWriter()
-    for conteudo in paginas:
-        escritor.add_page(_pagina_com_texto(escritor, conteudo))
-    buffer = BytesIO()
-    escritor.write(buffer)
-    return buffer.getvalue()
-
-
-def pdf_apenas_imagem(paginas: int = 2) -> bytes:
-    """Simula PDF escaneado: páginas SEM stream de texto (extração ~0 chars)."""
-    escritor = PdfWriter()
-    for _ in range(paginas):
-        escritor.add_blank_page(width=612, height=792)
-    buffer = BytesIO()
-    escritor.write(buffer)
-    return buffer.getvalue()
-
-
-def _longo(semente: str) -> str:
-    """Página 'nativa': texto ACIMA do limiar default (100 chars/página)."""
-    return (
-        f"{semente} - trecho de conteudo textual para extracao "
-        "acima do limiar de escaneamento configurado no repositorio"
-    ) * 2
-
-
-# -- infraestrutura compartilhada ---------------------------------------------------
-
-
-@pytest.fixture
-def corpus(politeness_veloz, monkeypatch):
-    raiz = politeness_veloz.configs.parent / "corpus"
-    monkeypatch.setenv("AGENTE_EDITAIS_CORPUS", str(raiz))
-    return raiz
-
-
-def _mapa_portal(servidor, *, sigla: str = "TST") -> str:
-    return (
-        f'[[instituicao]]\nsigla = "{sigla}"\nnome = "Instituto de Teste {sigla}"\n\n'
-        f'  [[instituicao.portal]]\n  nome = "Portal {sigla}"\n'
-        f'  categoria = "integra"\n  url = "{url_do(servidor)}"\n'
-        f'  seeds = ["{url_do(servidor)}"]\n'
-    )
-
-
-def _registrar_candidatos(servidor, caminho_manifesto, caminhos: list[str]) -> None:
-    with Manifesto(caminho_manifesto) as manifesto:
-        portal_id = manifesto.id_portal_por_url(url_do(servidor))
-        assert portal_id is not None, "rode 'mapa validar' antes"
-        for caminho in caminhos:
-            assert manifesto.registrar_candidato(
-                portal_id, url_do(servidor, caminho), "pdf"
-            )
-
-
-def _coletar(cli, politeness_veloz, servidor_fake, corpos: dict[str, bytes]) -> None:
-    """Pipeline real até o L1: mapa validar → candidatos → coletar."""
-    for caminho, corpo in corpos.items():
-        servidor_fake.paginas[caminho] = (200, "application/pdf", corpo)
-    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
-    assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
-    _registrar_candidatos(servidor_fake, politeness_veloz.manifesto, list(corpos))
-    assert cli.invoke(app, ["coletar", "--portal", "TST"]).exit_code == 0
-
-
-def _documentos(caminho_manifesto) -> list[dict]:
-    with Manifesto(caminho_manifesto) as manifesto:
-        return [
-            dict(linha)
-            for linha in manifesto.consultar(
-                "SELECT * FROM documentos ORDER BY url_origem"
-            )
-        ]
-
-
-def _tipos_eventos(caminho_manifesto) -> list[tuple[str, dict]]:
-    with Manifesto(caminho_manifesto) as manifesto:
-        return [
-            (linha["tipo"], json.loads(linha["detalhe"]))
-            for linha in manifesto.consultar(
-                "SELECT tipo, detalhe FROM eventos ORDER BY id"
-            )
-        ]
-
-
-def _saida(resultado) -> str:
-    return resultado.output + (resultado.stderr or "")
+# -- infraestrutura local (builders compartilhados vivem no conftest) ----------------
 
 
 def _documento_em(pasta: Path, corpo_pdf: bytes) -> tuple[Manifesto, dict]:
@@ -183,17 +82,17 @@ def _documento_em(pasta: Path, corpo_pdf: bytes) -> tuple[Manifesto, dict]:
 def test_tres_nativos_geram_txt_irmaos_flags_false_e_eventos(
     cli, politeness_veloz, servidor_fake, corpus
 ):
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
         {
-            "/2023/edital-a.pdf": pdf_com_texto([_longo("Edital de Inovacao numero um")]),
+            "/2023/edital-a.pdf": pdf_com_texto([longo("Edital de Inovacao numero um")]),
             "/editais/b.pdf": pdf_com_texto(
-                [_longo("Conteudo nativo da pagina"), _longo("Segunda pagina com texto")]
+                [longo("Conteudo nativo da pagina"), longo("Segunda pagina com texto")]
             ),
             "/docs/c.pdf": pdf_com_texto([
-                _longo("Terceiro edital com texto suficiente")
+                longo("Terceiro edital com texto suficiente")
             ]),
         },
     )
@@ -201,10 +100,10 @@ def test_tres_nativos_geram_txt_irmaos_flags_false_e_eventos(
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    assert "extraídos: 3" in _saida(resultado)
-    assert "erros: 0" in _saida(resultado)
+    assert "extraídos: 3" in saida_cli(resultado)
+    assert "erros: 0" in saida_cli(resultado)
 
-    documentos = _documentos(politeness_veloz.manifesto)
+    documentos = documentos_do_manifesto(politeness_veloz.manifesto)
     assert len(documentos) == 3
     for documento in documentos:
         pdf = Path(documento["caminho"])
@@ -233,7 +132,7 @@ def test_tres_nativos_geram_txt_irmaos_flags_false_e_eventos(
         )
         assert documento["texto_chars"] >= 20, "texto real foi extraído"
 
-    eventos = _tipos_eventos(politeness_veloz.manifesto)
+    eventos = tipos_eventos(politeness_veloz.manifesto)
     tipos = [tipo for tipo, _ in eventos]
     assert tipos.count("texto_extraido") == 3
     assert "texto_escaneado" not in tipos
@@ -261,34 +160,34 @@ def test_tres_nativos_geram_txt_irmaos_flags_false_e_eventos(
 def test_pdf_apenas_imagem_recebe_flag_escaneado_e_evento(
     cli, politeness_veloz, servidor_fake, corpus
 ):
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
         {
             "/scan/antigo.pdf": pdf_apenas_imagem(paginas=2),
-            "/nativo/bom.pdf": pdf_com_texto([_longo("Documento nativo com bastante texto")]),
+            "/nativo/bom.pdf": pdf_com_texto([longo("Documento nativo com bastante texto")]),
         },
     )
 
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    assert "escaneados: 1" in _saida(resultado)
-    assert "extraídos: 1" in _saida(resultado)
+    assert "escaneados: 1" in saida_cli(resultado)
+    assert "extraídos: 1" in saida_cli(resultado)
 
     por_nome = {
         Path(doc["caminho"]).name.rsplit("-", 1)[-1]: doc
-        for doc in _documentos(politeness_veloz.manifesto)
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
     }
     escaneado = next(
         doc
-        for doc in _documentos(politeness_veloz.manifesto)
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
         if Path(doc["caminho"]).name.endswith("-antigo.pdf")
     )
     nativo = next(
         doc
-        for doc in _documentos(politeness_veloz.manifesto)
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
         if Path(doc["caminho"]).name.endswith("-bom.pdf")
     )
     assert escaneado["flag_escaneado"] == 1
@@ -302,7 +201,7 @@ def test_pdf_apenas_imagem_recebe_flag_escaneado_e_evento(
 
     escaneados = [
         detalhe
-        for tipo, detalhe in _tipos_eventos(politeness_veloz.manifesto)
+        for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto)
         if tipo == "texto_escaneado"
     ]
     assert len(escaneados) == 1
@@ -318,18 +217,18 @@ def test_pdf_apenas_imagem_recebe_flag_escaneado_e_evento(
 def test_bytes_corrompidos_isolam_erro_e_lote_segue(
     cli, politeness_veloz, servidor_fake, corpus
 ):
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
         {
-            "/quebrado/x.pdf": pdf_com_texto([_longo("Este sera corrompido depois")]),
-            "/integro/y.pdf": pdf_com_texto([_longo("Documento integro permanece")]),
+            "/quebrado/x.pdf": pdf_com_texto([longo("Este sera corrompido depois")]),
+            "/integro/y.pdf": pdf_com_texto([longo("Documento integro permanece")]),
         },
     )
     vitima = next(
         doc
-        for doc in _documentos(politeness_veloz.manifesto)
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
         if doc["caminho"].endswith("x.pdf")
     )
     with open(vitima["caminho"], "wb") as estrago:
@@ -337,20 +236,20 @@ def test_bytes_corrompidos_isolam_erro_e_lote_segue(
 
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
-    assert resultado.exit_code == 0, _saida(resultado) + " — lote NUNCA aborta por um documento"
-    assert "erros: 1" in _saida(resultado)
-    assert "extraídos: 1" in _saida(resultado)
+    assert resultado.exit_code == 0, saida_cli(resultado) + " — lote NUNCA aborta por um documento"
+    assert "erros: 1" in saida_cli(resultado)
+    assert "extraídos: 1" in saida_cli(resultado)
 
     quebrado = next(
         doc
-        for doc in _documentos(politeness_veloz.manifesto)
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
         if doc["id"] == vitima["id"]
     )
     assert quebrado["extraido_em"] is None, "corrompido fica SEM proveniência"
     assert quebrado["flag_escaneado"] is None and quebrado["texto_caminho"] is None
     assert not Path(quebrado["caminho"]).with_suffix(".txt").exists(), "sem .txt"
 
-    eventos = _tipos_eventos(politeness_veloz.manifesto)
+    eventos = tipos_eventos(politeness_veloz.manifesto)
     erros = [detalhe for tipo, detalhe in eventos if tipo == "texto_erro"]
     assert len(erros) == 1
     assert erros[0]["fase"] == "abertura_pdf"
@@ -375,18 +274,18 @@ def test_bytes_corrompidos_isolam_erro_e_lote_segue(
 def test_arquivo_ausente_marca_erro_e_lote_segue(
     cli, politeness_veloz, servidor_fake, corpus
 ):
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
         {
-            "/sumiu/a.pdf": pdf_com_texto([_longo("Este arquivo vai sumir")]),
-            "/ficou/b.pdf": pdf_com_texto([_longo("Documento presente no disco")]),
+            "/sumiu/a.pdf": pdf_com_texto([longo("Este arquivo vai sumir")]),
+            "/ficou/b.pdf": pdf_com_texto([longo("Documento presente no disco")]),
         },
     )
     vitima = next(
         doc
-        for doc in _documentos(politeness_veloz.manifesto)
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
         if doc["caminho"].endswith("a.pdf")
     )
     Path(vitima["caminho"]).unlink()
@@ -394,12 +293,12 @@ def test_arquivo_ausente_marca_erro_e_lote_segue(
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    assert "erros: 1" in _saida(resultado)
-    assert "extraídos: 1" in _saida(resultado)
+    assert "erros: 1" in saida_cli(resultado)
+    assert "extraídos: 1" in saida_cli(resultado)
 
     ausentes = [
         detalhe
-        for tipo, detalhe in _tipos_eventos(politeness_veloz.manifesto)
+        for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto)
         if tipo == "arquivo_ausente"
     ]
     assert len(ausentes) == 1
@@ -413,20 +312,20 @@ def test_arquivo_ausente_marca_erro_e_lote_segue(
 def test_reexecucao_idempotente_zero_reextracoes(
     cli, politeness_veloz, servidor_fake, corpus
 ):
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
         {
-            "/i/um.pdf": pdf_com_texto([_longo("Primeira pagina"), _longo("Segunda pagina")]),
-            "/i/dois.pdf": pdf_com_texto([_longo("Outro documento nativo")]),
+            "/i/um.pdf": pdf_com_texto([longo("Primeira pagina"), longo("Segunda pagina")]),
+            "/i/dois.pdf": pdf_com_texto([longo("Outro documento nativo")]),
             "/i/tres.pdf": pdf_apenas_imagem(paginas=1),
         },
     )
     primeira = cli.invoke(app, ["textuar", "--portal", "TST"])
     assert primeira.exit_code == 0, primeira.output
     tipos_primeira = [
-        tipo for tipo, _ in _tipos_eventos(politeness_veloz.manifesto)
+        tipo for tipo, _ in tipos_eventos(politeness_veloz.manifesto)
     ]
     assert tipos_primeira.count("texto_extraido") == 2
     assert tipos_primeira.count("texto_escaneado") == 1
@@ -434,10 +333,10 @@ def test_reexecucao_idempotente_zero_reextracoes(
     segunda = cli.invoke(app, ["textuar", "--todos"])
 
     assert segunda.exit_code == 0, segunda.output
-    assert "pulados: 3" in _saida(segunda), "resumo mostra os pulados"
-    assert "extraídos: 0" in _saida(segunda) and "escaneados: 0" in _saida(segunda)
+    assert "pulados: 3" in saida_cli(segunda), "resumo mostra os pulados"
+    assert "extraídos: 0" in saida_cli(segunda) and "escaneados: 0" in saida_cli(segunda)
     tipos_segunda = [
-        tipo for tipo, _ in _tipos_eventos(politeness_veloz.manifesto)
+        tipo for tipo, _ in tipos_eventos(politeness_veloz.manifesto)
     ]
     assert tipos_segunda.count("texto_extraido") == 2, "nenhum re-parse na retomada"
     assert tipos_segunda.count("texto_escaneado") == 1
@@ -449,30 +348,30 @@ def test_reexecucao_idempotente_zero_reextracoes(
 def test_documento_novo_pos_extracao_processa_apenas_ele(
     cli, politeness_veloz, servidor_fake, corpus
 ):
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
-        {"/velho/a.pdf": pdf_com_texto([_longo("Documento original ja textuado")])},
+        {"/velho/a.pdf": pdf_com_texto([longo("Documento original ja textuado")])},
     )
     assert cli.invoke(app, ["textuar", "--portal", "TST"]).exit_code == 0
 
-    _registrar_candidatos(servidor_fake, politeness_veloz.manifesto, ["/novo/b.pdf"])
+    registrar_candidatos(servidor_fake, politeness_veloz.manifesto, ["/novo/b.pdf"])
     servidor_fake.paginas["/novo/b.pdf"] = (
         200,
         "application/pdf",
-        pdf_com_texto([_longo("Novidade capturada depois da primeira textuacao")]),
+        pdf_com_texto([longo("Novidade capturada depois da primeira textuacao")]),
     )
     assert cli.invoke(app, ["coletar", "--portal", "TST"]).exit_code == 0
 
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    assert "extraídos: 1" in _saida(resultado), "apenas o novo é extraído"
-    assert "pulados: 1" in _saida(resultado), "o antigo já tem hash vigente"
+    assert "extraídos: 1" in saida_cli(resultado), "apenas o novo é extraído"
+    assert "pulados: 1" in saida_cli(resultado), "o antigo já tem hash vigente"
     novos = [
         detalhe
-        for tipo, detalhe in _tipos_eventos(politeness_veloz.manifesto)
+        for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto)
         if tipo == "texto_extraido" and detalhe["url"].endswith("/novo/b.pdf")
     ]
     assert len(novos) == 1
@@ -482,28 +381,28 @@ def test_nova_versao_do_documento_ganha_txt_proprio(
     cli, politeness_veloz, servidor_fake, corpus
 ):
     """Bytes alterados ⇒ nova versão ⇒ re-extração do NOVO caminho (novo txt)."""
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
-        {"/v/doc.pdf": pdf_com_texto([_longo("Versao um do edital")])},
+        {"/v/doc.pdf": pdf_com_texto([longo("Versao um do edital")])},
     )
     assert cli.invoke(app, ["textuar", "--portal", "TST"]).exit_code == 0
-    v1 = _documentos(politeness_veloz.manifesto)[0]
+    v1 = documentos_do_manifesto(politeness_veloz.manifesto)[0]
 
     with open(v1["caminho"], "wb") as estrago:
         estrago.write(b"lixo")  # quebra a vigência ⇒ coleta re-captura como v2
     servidor_fake.paginas["/v/doc.pdf"] = (
         200,
         "application/pdf",
-        pdf_com_texto([_longo("Versao dois com conteudo novo e mais longo")]),
+        pdf_com_texto([longo("Versao dois com conteudo novo e mais longo")]),
     )
     assert cli.invoke(app, ["coletar", "--portal", "TST"]).exit_code == 0
 
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    versoes = _documentos(politeness_veloz.manifesto)
+    versoes = documentos_do_manifesto(politeness_veloz.manifesto)
     assert len(versoes) == 2
     v2 = next(doc for doc in versoes if doc["id"] != v1["id"])
     assert v2["predecessor_id"] == v1["id"]
@@ -519,20 +418,20 @@ def test_nova_versao_do_documento_ganha_txt_proprio(
 def test_alias_de_hash_duplicado_ganha_proveniencia_e_compartilha_o_txt(
     cli, politeness_veloz, servidor_fake, corpus
 ):
-    corpo = pdf_com_texto([_longo("Mesmos bytes servidos em duas urls")])
-    _coletar(
+    corpo = pdf_com_texto([longo("Mesmos bytes servidos em duas urls")])
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
         {"/x/um.pdf": corpo, "/y/dois.pdf": corpo},
     )
-    assert len(_documentos(politeness_veloz.manifesto)) == 2, "canônico + alias"
+    assert len(documentos_do_manifesto(politeness_veloz.manifesto)) == 2, "canônico + alias"
 
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    assert "extraídos: 2" in _saida(resultado)
-    linhas = _documentos(politeness_veloz.manifesto)
+    assert "extraídos: 2" in saida_cli(resultado)
+    linhas = documentos_do_manifesto(politeness_veloz.manifesto)
     assert all(doc["flag_escaneado"] == 0 for doc in linhas)
     caminhos_txt = {doc["texto_caminho"] for doc in linhas}
     assert len(caminhos_txt) == 1, ".txt irmão é UM só (mesmo caminho de bytes)"
@@ -580,7 +479,7 @@ def test_todas_as_paginas_falhando_vira_escaneado_com_detalhe(tmp_path, monkeypa
         assert linha["flag_escaneado"] == 1
         escaneados = [
             detalhe
-            for tipo, detalhe in _tipos_eventos(manifesto.caminho)
+            for tipo, detalhe in tipos_eventos(manifesto.caminho)
             if tipo == "texto_escaneado"
         ]
         assert len(escaneados) == 1
@@ -612,7 +511,7 @@ def test_falha_parcial_de_parsing_nao_forca_flag(tmp_path, monkeypatch):
         assert linha["flag_escaneado"] == 0, "falha PARCIAL não força flag"
         extraidos = [
             detalhe
-            for tipo, detalhe in _tipos_eventos(manifesto.caminho)
+            for tipo, detalhe in tipos_eventos(manifesto.caminho)
             if tipo == "texto_extraido"
         ]
         assert len(extraidos) == 1
@@ -742,10 +641,10 @@ def test_falha_de_persistencia_vira_erro_e_lote_segue(tmp_path, monkeypatch):
     """``registrar_texto_extraido`` False ⇒ evento texto_erro fase
     'persistencia' por documento — e o lote segue até o fim."""
     manifesto, _primeiro = _documento_em(
-        tmp_path / "lote", pdf_com_texto([_longo("Primeiro documento do lote")])
+        tmp_path / "lote", pdf_com_texto([longo("Primeiro documento do lote")])
     )
     segundo = tmp_path / "lote" / "segundo.pdf"
-    segundo.write_bytes(pdf_com_texto([_longo("Segundo documento do lote")]))
+    segundo.write_bytes(pdf_com_texto([longo("Segundo documento do lote")]))
     manifesto.executar(
         """
         INSERT INTO documentos (
@@ -769,7 +668,7 @@ def test_falha_de_persistencia_vira_erro_e_lote_segue(tmp_path, monkeypatch):
         assert [d.desfecho for d in desfechos] == ["erro", "erro"], "lote segue após falha"
         erros = [
             detalhe
-            for tipo, detalhe in _tipos_eventos(manifesto.caminho)
+            for tipo, detalhe in tipos_eventos(manifesto.caminho)
             if tipo == "texto_erro"
         ]
         assert len(erros) == 2
@@ -813,7 +712,7 @@ def test_polidez_le_limiar_de_texto(tmp_path) -> None:
 def test_config_texto_malformada_recusada_exit_2(
     cli, politeness_veloz, servidor_fake, secao_texto
 ):
-    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
+    escrever_mapa(politeness_veloz, mapa_portal(servidor_fake))
     (politeness_veloz.configs / "politeness.toml").write_text(
         'delay_minimo_s = 0.0\noff_peak = "22:00-06:00"\nuser_agent = "ua-testes/1"\n'
         + secao_texto,
@@ -821,7 +720,7 @@ def test_config_texto_malformada_recusada_exit_2(
     )
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
     assert resultado.exit_code == 2
-    assert "ERRO" in _saida(resultado)
+    assert "ERRO" in saida_cli(resultado)
 
 
 # -- Superfície CLI ------------------------------------------------------------------
@@ -834,15 +733,15 @@ def test_flags_mutuamente_exclusivas_no_textuar(cli, politeness_veloz) -> None:
 
 
 def test_textuar_sigla_desconhecida_sai_1(cli, politeness_veloz, servidor_fake) -> None:
-    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
+    escrever_mapa(politeness_veloz, mapa_portal(servidor_fake))
     resultado = cli.invoke(app, ["textuar", "--portal", "XXX"])
     assert resultado.exit_code == 1
-    saida = _saida(resultado)
+    saida = saida_cli(resultado)
     assert "XXX" in saida and "TST" in saida
 
 
 def test_sigla_minuscula_case_insensitive(cli, politeness_veloz, servidor_fake) -> None:
-    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
+    escrever_mapa(politeness_veloz, mapa_portal(servidor_fake))
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
 
     resultado = cli.invoke(app, ["textuar", "--portal", "tst"])
@@ -856,7 +755,7 @@ def test_limiar_custom_do_toml_decide_flags_via_cli(
 ):
     """Wiring TOML→flag ponta a ponta: com limiar 250, um nativo de ~120
     chars/página vira ESCANEADO (hardcode de 100 no chamador daria extraído)."""
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
@@ -876,7 +775,7 @@ def test_limiar_custom_do_toml_decide_flags_via_cli(
     assert resultado.exit_code == 0, resultado.output
     flags = {
         Path(doc["caminho"]).name.rsplit("-", 1)[-1]: doc["flag_escaneado"]
-        for doc in _documentos(politeness_veloz.manifesto)
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
     }
     assert flags["a.pdf"] == 1, "120 < 250×1 ⇒ flag true VINDA DO TOML"
     assert flags["b.pdf"] == 0, "300 ≥ 250×1 ⇒ flag false"
@@ -886,17 +785,17 @@ def test_textuar_recusa_portal_orfao_nao_sincronizado(
     cli, politeness_veloz, servidor_fake, criar_servidor_fake
 ):
     orfao = criar_servidor_fake()  # NUNCA passa por 'mapa validar'
-    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
+    escrever_mapa(politeness_veloz, mapa_portal(servidor_fake))
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
     escrever_mapa(
         politeness_veloz,
-        _mapa_portal(servidor_fake) + "\n" + _mapa_portal(orfao, sigla="ORF"),
+        mapa_portal(servidor_fake) + "\n" + mapa_portal(orfao, sigla="ORF"),
     )
 
     resultado = cli.invoke(app, ["textuar", "--todos"])
 
     assert resultado.exit_code == 1, resultado.output
-    saida = _saida(resultado)
+    saida = saida_cli(resultado)
     assert "[ORF]" in saida and url_do(orfao) in saida
     assert "mapa validar" in saida
 
@@ -908,27 +807,27 @@ def test_textuar_nao_exige_janela_off_peak(
     from agente_editais import consulta
 
     monkeypatch.setattr(consulta, "dentro_da_janela_off_peak", lambda *_a, **_k: False)
-    _coletar(
+    coletar_pdfs(
         cli,
         politeness_veloz,
         servidor_fake,
-        {"/fora-janela/doc.pdf": pdf_com_texto([_longo("Extracao local dispensa janela")])},
+        {"/fora-janela/doc.pdf": pdf_com_texto([longo("Extracao local dispensa janela")])},
     )
 
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    assert "extraídos: 1" in _saida(resultado)
+    assert "extraídos: 1" in saida_cli(resultado)
 
 
 def test_textuar_sem_documentos_sai_zero(cli, politeness_veloz, servidor_fake) -> None:
-    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
+    escrever_mapa(politeness_veloz, mapa_portal(servidor_fake))
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
 
     resultado = cli.invoke(app, ["textuar", "--portal", "TST"])
 
     assert resultado.exit_code == 0, resultado.output
-    assert "Documentos: 0" in _saida(resultado)
+    assert "Documentos: 0" in saida_cli(resultado)
 
 
 # -- Membria e dedupe de documentos_do_portal ----------------------------------------

@@ -5,13 +5,16 @@ portais institucionais da **Rede Federal EPCT** — piloto de pesquisa
 acadêmica (PPGCS/UFBA). Pipeline em lotes orientado ao Manifesto SQLite;
 nenhum serviço residente, nenhum scheduler (spine AD-1).
 
-> **Escopo atual (Story 5):** fundação + Mapa-Mestre + pré-voo + descoberta
+> **Escopo atual (Story 6):** fundação + Mapa-Mestre + pré-voo + descoberta
 > híbrida (CAP-2) + **coleta de PDFs** (CAP-4) + **texto por documento**
 > (CAP-6) + **datação multi-fonte com fila humana** (CAP-3): evidência bruta
 > por fonte consultada (`url`/`ancora`/`pdf_meta`), regras de aceite na
-> janela 2019–2026 e Fila de Revisão Manual com decisão fundamentada
-> (schema v5). `<time>`/CSS, backfill Wayback e OCR são passos futuros —
-> `metodo_datacao` só é preenchido pelo aceite da datação.
+> janela 2019–2026 e Fila de Revisão Manual com decisão fundamentada +
+> **consulta e exportação ONLY-leitura** (CAP-9/UJ-3/§10): `consultar` com
+> contagens coerentes e CSV, `custodia --edital` com a cadeia completa em
+> JSON (schema v5). `<time>`/CSS, backfill Wayback, OCR, catálogo L2 e a
+> view pública são passos futuros — `metodo_datacao` só é preenchido pelo
+> aceite da datação.
 
 ## Instalação
 
@@ -39,6 +42,11 @@ uv run agente-editais datar --todos             # CAP-3 para todos os portais
 uv run agente-editais fila listar               # itens pendentes com motivo e evidências
 uv run agente-editais fila decidir --id 1 --ano 2023 \
     --justificativa "Capa declara 2023." --autor "Pesquisadora"
+uv run agente-editais consultar                  # CAP-9: lista o catálogo L1
+uv run agente-editais consultar --instituicao IFES --ano 2024 \
+    --categoria agencia_inovacao                 # filtros combinam por E (AND)
+uv run agente-editais consultar --saida catalogo.csv   # exporta CSV UTF-8 (vírgula)
+uv run agente-editais custodia --edital ifba-2023-edital-x --saida custodia.json
 uv run agente-editais status         # resumo do Manifesto + últimos eventos
 ```
 
@@ -210,6 +218,63 @@ Publicação no Portal consultando TODAS as fontes locais disponíveis:
 - **Movimentação física** dos PDFs de `_sem_ano/` para a pasta do ano
   definitivo fica para decisão futura — nesta etapa só o banco muda.
 
+### Consulta e exportação (CAP-9)
+
+Dois comandos **ONLY-leitura** sobre os dados do Manifesto (AD-3/AD-4):
+nenhuma rede, nenhum parseio de PDF, nenhum acesso ao `corpus/` — toda
+linha vem do banco. A ÚNICA escrita é o evento append-only de custódia
+(`consultar_concluido`/`custodia_concluida`, AD-10), registrado após a
+tentativa de export com o resultado honesto (`"escrita": "ok" | "falha"`).
+
+```bash
+uv run agente-editais consultar [--instituicao SIGLA] [--ano AAAA] \
+    [--categoria integra|nit|prpgi_prppg|agencia_inovacao] [--saida CAMINHO.csv]
+uv run agente-editais custodia --edital ID [--saida CAMINHO.json]
+```
+
+- **Unidade = Documento** (`edital_id` é uma coluna; agregar linhas por
+  Edital fica para decisão futura). Filtros combinam por E; zero resultados
+  é sucesso (exit 0 — pesquisar hipóteses vazias não é erro).
+- **Ano efetivo e origem são colunas explícitas:** `ano` =
+  `COALESCE(ano_aceito, decidido_ano da fila)` e `ano_fonte` ∈
+  `automatica` (datação convergente), `fila_humana` (decisão com ano
+  atribuído) ou `vazio` (pendente na fila ou sem destino — nada desaparece
+  silenciosamente; anos vazios ordenam POR ÚLTIMO).
+- **Excluídos:** ficam FORA da listagem e aparecem no resumo
+  (`excluídos: N`). A contagem de excluídos aplica instituição/categoria,
+  mas **IGNORA o filtro `--ano`** — a população excluída não participa da
+  janela de listagem (exclusão não tem ano), então `consultar --ano 2024`
+  continua mostrando quantos foram excluídos na instituição pedida em vez
+  de um "excluídos: 0" enganoso.
+- **Contagens coerentes (FR-20):** o resumo impresso deriva da MESMA query
+  das linhas — nunca de contagem paralela.
+- **CSV (`--saida`):** stdlib, UTF-8 sem BOM, separador vírgula, cabeçalho
+  completo mesmo com zero linhas; grava somente no caminho dado. A listagem
+  e as contagens saem no terminal ANTES da tentativa de escrita — falha de
+  gravação vira exit 1 SEM esconder o resultado da consulta. Para Excel,
+  use importação explícita; notebooks/pandas consomem direto (Story 9).
+- **Custódia (§10):** JSON pretty UTF-8 (`ensure_ascii=False, indent=2`)
+  com metadados autodescritivos no raiz (`gerado_em` UTC, `versao_agente`,
+  `schema_version`) reconstruindo, por documento do edital, captura (data
+  UTC, hash SHA-256, URL de origem, versão do crawler, caminho, predecessor)
+  → datação (método, ano aceito, evidências brutas por fonte com
+  valor/localização) → bloco da fila quando existir (motivo, status e
+  decisão humana: ano/exclusão, justificativa, autoria, data). O bloco da
+  fila usa a MESMA linha vigente por URL da listagem (resolvida vence
+  pendente; entre resolvidas, a mais recente). Edital existente SEM
+  documentos sai 0 com `"documentos": []`. Sem `--saida`, imprime no
+  stdout; com `--saida`, falha de gravação vira exit 1 SEM fallback no
+  stdout (o JSON não vaza parcial).
+- Flags malformadas são recusadas ANTES de abrir o banco (exit 2):
+  `--instituicao` vazia, `--categoria` fora do CHECK do banco, `--ano`
+  fora de 2019–2026, `--edital` vazio e `--saida` apontando para o PRÓPRIO
+  Manifesto (o export truncaria o banco). Manifesto inexistente ou edital
+  desconhecido ⇒ exit 1; falha de escrita do CSV/JSON ⇒ exit 1.
+- **Limitações:** filtros de dimensão/valor de campo do catálogo L2
+  (Stories 7–8), a view pública `v_catalogo_publicavel` (Story 8) e a
+  agregação por Edital ainda não existem; a consulta reflete o estado
+  L1+fila corrente.
+
 
 ### Renderização Playwright — verificação manual opcional
 
@@ -230,9 +295,9 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 
 | Código | Significado |
 | ------ | ----------- |
-| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta, textuar e datar com falhas por portal/documento) |
-| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`/`textuar`/`datar`, portal ausente do Manifesto; item de fila inexistente ou já resolvido no `fila decidir`) |
-| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar`/`textuar`/`datar` (`--portal` vazio, `--portal` com `--todos`), da decisão na fila (`fila decidir`: sem justificativa/autoria, destino ausente ou duplo, ano fora da janela) e do filtro de listagem (`fila listar --status` inválido) |
+| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta, textuar e datar com falhas por portal/documento, e `consultar`/`custodia` com zero resultados) |
+| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`/`textuar`/`datar`, portal ausente do Manifesto; item de fila inexistente ou já resolvido no `fila decidir`; Manifesto inexistente ou edital desconhecido no `consultar`/`custodia`; falha de escrita do CSV/JSON) |
+| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar`/`textuar`/`datar` (`--portal` vazio, `--portal` com `--todos`), da decisão na fila (`fila decidir`: sem justificativa/autoria, destino ausente ou duplo, ano fora da janela), do filtro de listagem (`fila listar --status` inválido), dos filtros do `consultar` (`--instituicao` vazia, `--categoria` fora do CHECK, `--ano` fora de 2019–2026) e do `custodia` (`--edital` vazio) — todos validados antes de abrir o banco; também `--saida` apontando para o próprio Manifesto no `consultar`/`custodia` |
 | 3 | engine SQLite abaixo do guard ≥ 3.51.3 |
 | 4 | Manifesto ocupado por outro processo |
 

@@ -1,30 +1,38 @@
 """CLI — superfície do pipeline em lotes (AD-1): um comando por execução.
 
 Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir``,
-``coletar``, ``textuar``, ``datar``, ``fila listar|decidir`` e ``status``.
+``coletar``, ``textuar``, ``datar``, ``fila listar|decidir``, ``consultar``,
+``custodia`` e ``status``.
 
 Códigos de saída:
 - 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta,
        textuação e datação com falhas por portal/URL/documento — o lote segue,
-       FR-2/CAP-4/CAP-6/CAP-3);
-- 1  erro operacional genérico: Manifesto inexistente no ``status``,
-       Manifesto mais novo que o agente, falha de abertura do banco,
-       violação de janela off-peak (pré-voo exigente OU crawling),
-       sigla desconhecida no ``descobrir``/``coletar``/``textuar``/``datar``
-       ou portal ausente do Manifesto; item de fila inexistente ou já
-       resolvido no ``fila decidir``;
+       FR-2/CAP-4/CAP-6/CAP-3; ``consultar``/``custodia`` com zero resultados);
+- 1  erro operacional genérico: Manifesto inexistente no ``status``/
+       ``consultar``/``custodia``, Manifesto mais novo que o agente, falha de
+       abertura do banco, violação de janela off-peak (pré-voo exigente OU
+       crawling), sigla desconhecida no ``descobrir``/``coletar``/``textuar``/
+       ``datar`` ou portal ausente do Manifesto; item de fila inexistente ou
+       já resolvido no ``fila decidir``; edital inexistente no ``custodia``;
+       falha de escrita do CSV/JSON no ``consultar``/``custodia``;
 - 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml
        e politeness.toml (nada é escrito; banco intocado) — ou flags
        malformadas: --portal/--todos dos comandos de lote, decisão inválida
        no ``fila decidir`` (sem justificativa/autoria, destino ausente ou
-       duplo, ano fora da janela 2019–2026) ou ``--status`` inválido no
-       ``fila listar``;
+       duplo, ano fora da janela 2019–2026), ``--status`` inválido no
+       ``fila listar``, filtros malformados no ``consultar`` (--instituicao
+       vazia, --categoria fora do CHECK do banco, --ano fora de 2019–2026)
+       e ``--edital`` vazio no ``custodia`` — todos validados ANTES de abrir
+       o banco; ``--saida`` apontando para o próprio Manifesto no
+       ``consultar``/``custodia`` (o export truncaria o banco);
 - 3  engine SQLite abaixo do guard AD-10;
 - 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
 """
 
 from __future__ import annotations
 
+import csv
+import json
 import os
 import sqlite3
 import sys
@@ -1069,6 +1077,287 @@ def fila_decidir(
             f"Item #{id} resolvido: {destino} — autor {autor_limpo}, "
             "decisão registrada com justificativa e data (FR-8)."
         )
+
+
+# -- consulta essencial (CAP-9/UJ-3/§10): comandos ONLY-leitura ---------------------
+
+_COLUNAS_CSV: tuple[str, ...] = (
+    "documento_id",
+    "edital_id",
+    "instituicao",
+    "categoria",
+    "ano",
+    "ano_fonte",
+    "metodo_datacao",
+    "url_origem",
+    "data_captura",
+    "hash_sha256",
+    "caminho",
+)
+
+_ERROS_DE_ESCRITA = (OSError, UnicodeEncodeError, csv.Error)
+
+
+def _recusar_flag(mensagem: str) -> None:
+    """Flag malformada: recusa ANTES de abrir o banco (exit 2)."""
+    typer.echo(f"ERRO: {mensagem}", err=True)
+    raise typer.Exit(code=2)
+
+
+def _recusar_saida_no_manifesto(saida: Path | None) -> None:
+    """Guarda catastrófica: ``--saida`` igual ao Manifesto é recusado cedo.
+
+    Um export gravado por cima do banco truncaria o estado único do sistema;
+    a comparação resolve ambos os caminhos e ignora caixa (Windows).
+    """
+    if saida is None:
+        return
+    caminho_manifesto = _caminho_manifesto()
+    try:
+        mesmo_caminho = os.path.normcase(str(Path(saida).resolve())) == os.path.normcase(
+            str(Path(caminho_manifesto).resolve())
+        )
+    except OSError:
+        mesmo_caminho = False  # resolução falhou ⇒ deixa a escrita falhar depois
+    if mesmo_caminho:
+        _recusar_flag(
+            "--saida não pode apontar para o próprio Manifesto "
+            f"({caminho_manifesto}): o export sobrescreveria o banco."
+        )
+
+
+def _tabela_l1(linhas: list[sqlite3.Row]) -> list[str]:
+    """Tabela alinhada do catálogo L1 com colunas compactas para o terminal.
+
+    O CSV de ``--saida`` carrega TODAS as colunas da query; aqui ficam só as
+    de leitura rápida — o conteúdo listado é exatamente o mesmo.
+    """
+    cabecalho = ("ANO", "FONTE", "INST", "CATEGORIA", "EDITAL", "DOCUMENTO")
+    registros = [
+        (
+            "" if linha["ano"] is None else str(linha["ano"]),
+            str(linha["ano_fonte"]),
+            str(linha["instituicao"]),
+            "" if linha["categoria"] is None else str(linha["categoria"]),
+            str(linha["edital_id"]),
+            str(linha["documento_id"]),
+        )
+        for linha in linhas
+    ]
+    larguras = [len(coluna) for coluna in cabecalho]
+    for registro in registros:
+        for indice, valor in enumerate(registro):
+            larguras[indice] = max(larguras[indice], len(valor))
+    saida = ["  ".join(coluna.ljust(larguras[i]) for i, coluna in enumerate(cabecalho))]
+    saida.append("  ".join("-" * largura for largura in larguras))
+    for registro in registros:
+        saida.append("  ".join(valor.ljust(larguras[i]) for i, valor in enumerate(registro)))
+    return saida
+
+
+@app.command()
+def consultar(
+    instituicao: str | None = typer.Option(
+        None,
+        "--instituicao",
+        help="Sigla da instituição, insensível a caixa (ex.: IFES).",
+    ),
+    ano: int | None = typer.Option(
+        None,
+        "--ano",
+        help="Ano EFETIVO do documento na janela fixa 2019–2026.",
+    ),
+    categoria: str | None = typer.Option(
+        None,
+        "--categoria",
+        help=f"Categoria do portal de origem ({', '.join(CATEGORIAS)}).",
+    ),
+    saida: Path | None = typer.Option(
+        None,
+        "--saida",
+        help="Grava todas as colunas como CSV UTF-8 (separador vírgula) neste caminho.",
+    ),
+) -> None:
+    """UJ-3: consulta ONLY-leitura do catálogo L1 com contagens coerentes.
+
+    Unidade = DOCUMENTO: ano EFETIVO = COALESCE(ano_aceito, decidido_ano da
+    fila), com origem explícita em ``ano_fonte`` (∈ automatica|fila_humana|
+    vazio). Excluídos por decisão humana ficam FORA da listagem e aparecem
+    no resumo — contagem que IGNORA o filtro de ano, pois a população
+    excluída não participa da janela; pendentes na fila aparecem com ano
+    vazio e por último na ordenação. As contagens impressas derivam da MESMA
+    query das linhas (FR-20). A listagem sai ANTES da tentativa de export:
+    falha de escrita vira exit 1 sem esconder o resultado. Filtros combinam
+    por E; zero resultados é sucesso (exit 0).
+    """
+    # flags validadas ANTES de abrir o banco (exit 2; nada é executado)
+    if instituicao is not None and not instituicao.strip():
+        _recusar_flag("--instituicao exige uma sigla não vazia (ex.: --instituicao IFES).")
+    if ano is not None and not (_ANO_MINIMO <= ano <= _ANO_MAXIMO):
+        _recusar_flag(f"--ano {ano} está fora da janela fixa 2019–2026.")
+    if categoria is not None and categoria.strip() not in CATEGORIAS:
+        _recusar_flag(
+            "--categoria deve ser uma de: "
+            f"{', '.join(CATEGORIAS)} (recebido {categoria!r})."
+        )
+    _recusar_saida_no_manifesto(saida)
+
+    filtros = {
+        "instituicao": instituicao.strip() if instituicao else None,
+        "ano": ano,
+        "categoria": categoria.strip() if categoria else None,
+    }
+
+    caminho_manifesto = _caminho_manifesto()
+    if not Path(caminho_manifesto).exists():
+        typer.echo(
+            f"ERRO: Manifesto não encontrado em {caminho_manifesto}. "
+            "Rode 'agente-editais mapa validar' para criá-lo.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    with uso_manifesto() as manifesto:
+        linhas = manifesto.listar_l1(**filtros)
+        excluidos = manifesto.contar_l1_excluidos(**filtros)
+        # FR-20: contagens derivam das MESMAS linhas da listagem — nunca de
+        # uma segunda contagem paralela que poderia divergir do Manifesto.
+        total = len(linhas)
+        por_fonte = {"automatica": 0, "fila_humana": 0, "vazio": 0}
+        for linha in linhas:
+            por_fonte[str(linha["ano_fonte"])] += 1
+
+        # eco ANTES do export: falha de gravação não esconde o resultado
+        for linha_tabela in _tabela_l1(linhas):
+            typer.echo(linha_tabela)
+        if not linhas:
+            typer.echo("(nenhum documento corresponde aos filtros)")
+        typer.echo("")
+        typer.echo(f"Resumo: {total} documento(s) listado(s), {excluidos} excluído(s)")
+        typer.echo(
+            "Por ano_fonte: "
+            f"automatica={por_fonte['automatica']}, "
+            f"fila_humana={por_fonte['fila_humana']}, "
+            f"vazio={por_fonte['vazio']}"
+        )
+
+        detalhe_evento = {
+            "filtros": filtros,
+            "listados": total,
+            "excluidos": excluidos,
+            "por_ano_fonte": por_fonte,
+            "csv": str(saida) if saida else None,
+        }
+        if saida is not None:
+            try:
+                with open(saida, "w", encoding="utf-8", newline="") as arquivo:
+                    escritor_csv = csv.DictWriter(arquivo, fieldnames=list(_COLUNAS_CSV))
+                    escritor_csv.writeheader()
+                    for linha in linhas:
+                        escritor_csv.writerow(
+                            {coluna: linha[coluna] for coluna in _COLUNAS_CSV}
+                        )
+            except _ERROS_DE_ESCRITA as exc:
+                # evento honesto: o log registra a FALHA antes do exit 1
+                manifesto.registrar_evento(
+                    tipo="consultar_concluido",
+                    comando="consultar",
+                    detalhe={
+                        **detalhe_evento,
+                        "escrita": "falha",
+                        "erro_export": str(exc),
+                    },
+                )
+                typer.echo(f"ERRO: falha ao gravar o CSV em {saida}: {exc}", err=True)
+                raise typer.Exit(code=1) from exc
+            typer.echo(f"CSV gravado em {saida}")
+
+        # evento só DEPOIS da tentativa de escrita — nunca afirma export
+        # concluída que não aconteceu (AD-10)
+        manifesto.registrar_evento(
+            tipo="consultar_concluido",
+            comando="consultar",
+            detalhe={**detalhe_evento, "escrita": "ok"},
+        )
+
+
+@app.command()
+def custodia(
+    edital: str | None = typer.Option(
+        None,
+        "--edital",
+        help="ID do Edital no Manifesto (coluna EDITAL do 'consultar').",
+    ),
+    saida: Path | None = typer.Option(
+        None,
+        "--saida",
+        help="Grava o JSON UTF-8 (indent=2) neste caminho; sem ela, imprime no stdout.",
+    ),
+) -> None:
+    """§10/UJ-3: cadeia de custódia de UM Edital, montada só do Manifesto.
+
+    Reconstrói captura (hash SHA-256, URL de origem, versão do crawler,
+    caminho, predecessor) → datação (método, ano aceito e evidências brutas
+    por fonte) → decisão humana da fila quando existir — sempre pela MESMA
+    linha vigente da listagem. Nenhum PDF nem arquivo do corpus é lido
+    (AD-4). Falha de gravação do arquivo vira exit 1 SEM fallback no stdout
+    (o JSON não vaza parcial); sem ``--saida``, o stdout é o destino.
+    """
+    if edital is None or not edital.strip():
+        _recusar_flag("--edital exige um identificador não vazio.")
+    id_edital = edital.strip()
+    _recusar_saida_no_manifesto(saida)
+
+    caminho_manifesto = _caminho_manifesto()
+    if not Path(caminho_manifesto).exists():
+        typer.echo(
+            f"ERRO: Manifesto não encontrado em {caminho_manifesto}. "
+            "Rode 'agente-editais mapa validar' para criá-lo.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    with uso_manifesto() as manifesto:
+        dados = manifesto.custodia_do_edital(id_edital)
+        if dados is None:
+            typer.echo(
+                f"ERRO: Edital '{id_edital}' não existe no Manifesto. "
+                "Veja os IDs na coluna EDITAL do 'agente-editais consultar'.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        conteudo = json.dumps(dados, ensure_ascii=False, indent=2)
+
+        def _registrar(escrita: str, **extra: str) -> None:
+            manifesto.registrar_evento(
+                tipo="custodia_concluida",
+                comando="custodia",
+                detalhe={
+                    "edital": id_edital,
+                    "documentos": len(dados["documentos"]),
+                    "json": str(saida) if saida else None,
+                    "escrita": escrita,
+                    **extra,
+                },
+            )
+
+        if saida is None:
+            typer.echo(conteudo)
+            _registrar("ok")
+            return
+
+        try:
+            saida.write_text(conteudo + "\n", encoding="utf-8")
+        except _ERROS_DE_ESCRITA as exc:
+            # evento honesto registra a falha; SEM fallback no stdout
+            _registrar("falha", erro_export=str(exc))
+            typer.echo(f"ERRO: falha ao gravar o JSON em {saida}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo(
+            f"Custódia do edital {id_edital}: {len(dados['documentos'])} documento(s) "
+            f"— JSON gravado em {saida}"
+        )
+        _registrar("ok")
 
 
 @app.command()
