@@ -401,6 +401,7 @@ def _filtros_l1(
     *,
     excluidos: bool,
     ignorar_ano: bool = False,
+    edital: str | None = None,
 ) -> tuple[str, tuple]:
     """WHERE compartilhado da consulta L1 — MESMA definição de linhas sempre.
 
@@ -410,7 +411,8 @@ def _filtros_l1(
     ``ignorar_ano=True`` (usado pela contagem de excluídos, patch 4) aplica
     instituição/categoria mas IGNORA o filtro de ano: a população excluída
     não participa da janela de listagem — com ``--ano``, o resumo continua
-    honesto em vez de reportar "excluídos: 0" enganoso.
+    honesto em vez de reportar "excluídos: 0" enganoso. ``edital`` filtra
+    por subtrecho do id do edital (LIKE %edital%, case-insensitive).
     """
     predicado_exclusao = _L1_EXCLUIDO_VIGENTE if excluidos else _L1_NAO_EXCLUIDO_VIGENTE
     clausulas = [predicado_exclusao]
@@ -424,6 +426,9 @@ def _filtros_l1(
     if categoria is not None:
         clausulas.append("p.categoria = ?")
         parametros.append(categoria)
+    if edital is not None:
+        clausulas.append("UPPER(d.edital_id) LIKE UPPER(?)")
+        parametros.append(f"%{edital}%")
     return " AND ".join(clausulas), tuple(parametros)
 
 
@@ -930,11 +935,33 @@ class Manifesto:
             )
         )
 
-    def consultar_fila(self, status: str | None = "pendente") -> list[sqlite3.Row]:
-        """Itens da fila na ordem de criação; ``None`` lista todos os status."""
+    def consultar_fila(
+        self, status: str | None = "pendente", *, limite: int | None = None
+    ) -> list[sqlite3.Row]:
+        """Itens da fila na ordem de criação; ``None`` lista todos os status.
+
+        ``limite`` restringe o número de linhas retornadas (paginacao).
+        Retorna sigla da instituição via JOIN com portais/instituições.
+        """
+        sql_base = """
+            SELECT f.*, p.categoria AS portal_categoria,
+                   i.sigla AS instituicao_sigla
+            FROM fila_revisao f
+            JOIN portais p ON p.id = f.portal_id
+            JOIN instituicoes i ON i.id = p.instituicao_id
+        """
         if status is None:
-            return self.consultar("SELECT * FROM fila_revisao ORDER BY id")
-        return self.consultar("SELECT * FROM fila_revisao WHERE status = ? ORDER BY id", (status,))
+            sql = f"{sql_base} ORDER BY f.id"
+        else:
+            sql = f"{sql_base} WHERE f.status = ? ORDER BY f.id"
+            params: tuple[Any, ...] = (status,)
+            if limite is not None:
+                sql += f" LIMIT {int(limite)}"
+                return self.consultar(sql, params)
+            return self.consultar(sql, params)
+        if limite is not None:
+            sql += f" LIMIT {int(limite)}"
+        return self.consultar(sql)
 
     def registrar_decisao_fila(
         self,
@@ -1014,6 +1041,31 @@ class Manifesto:
                 """
             )[0][0]
         )
+
+    def contar_texto_estagio(self) -> dict[str, int]:
+        """Contagem de documentos por estágio de extração de texto (métrica do status).
+
+        Devolve ``extraidos`` (flag_escaneado=0 E texto extraído),
+        ``escaneados`` (flag_escaneado=1) e ``pendentes`` (flag_escaneado
+        IS NULL — nunca processados pelo ``textuar``).
+        """
+        linhas = self.consultar(
+            """
+            SELECT
+                CASE
+                    WHEN flag_escaneado = 0 AND extraido_em IS NOT NULL THEN 'extraidos'
+                    WHEN flag_escaneado = 1 THEN 'escaneados'
+                    ELSE 'pendentes'
+                END AS estagio,
+                COUNT(*) AS qtd
+            FROM documentos
+            GROUP BY estagio
+            """
+        )
+        resultado = {"extraidos": 0, "escaneados": 0, "pendentes": 0}
+        for linha in linhas:
+            resultado[str(linha["estagio"])] = int(linha["qtd"])
+        return resultado
 
     def contar_fila(self, status: str | None = None) -> int:
         if status is None:
@@ -1218,6 +1270,8 @@ class Manifesto:
         instituicao: str | None = None,
         ano: int | None = None,
         categoria: str | None = None,
+        edital: str | None = None,
+        limite: int | None = None,
     ) -> list[sqlite3.Row]:
         """Documentos NÃO excluídos com ano EFETIVO e sua origem (FR-20).
 
@@ -1228,14 +1282,18 @@ class Manifesto:
         FORA da listagem (conte-os com ``contar_l1_excluidos``, mesma
         definição de linhas). A fila entra pela linha VIGENTE por URL (uma
         única decisão: resolvida vence pendente, maior id entre resolvidas)
-        — nunca há duplicação nem divergência com a custódia. Leitura pura:
+        — nunca há duplicação nem divergência com a custódia. ``edital``
+        filtra por subtrecho do id (case-insensitive LIKE). ``limite``
+        restringe o número de linhas retornadas (paginacao). Leitura pura:
         nenhum parseio de PDF, nenhum acesso ao corpus (AD-4).
         """
-        clausulas, parametros = _filtros_l1(instituicao, ano, categoria, excluidos=False)
-        return self.consultar(
-            f"SELECT {_L1_COLUNAS} {_L1_JOINS} WHERE {clausulas} {_L1_ORDEM}",
-            parametros,
+        clausulas, parametros = _filtros_l1(
+            instituicao, ano, categoria, excluidos=False, edital=edital
         )
+        sql = f"SELECT {_L1_COLUNAS} {_L1_JOINS} WHERE {clausulas} {_L1_ORDEM}"
+        if limite is not None:
+            sql += f" LIMIT {int(limite)}"
+        return self.consultar(sql, parametros)
 
     def contar_l1_excluidos(
         self,
@@ -1243,6 +1301,7 @@ class Manifesto:
         instituicao: str | None = None,
         ano: int | None = None,
         categoria: str | None = None,
+        edital: str | None = None,
     ) -> int:
         """Excluídos sob os filtros informados, IGNORANDO o filtro de ano.
 
@@ -1254,7 +1313,7 @@ class Manifesto:
         0" enganoso.
         """
         clausulas, parametros = _filtros_l1(
-            instituicao, ano, categoria, excluidos=True, ignorar_ano=True
+            instituicao, ano, categoria, excluidos=True, ignorar_ano=True, edital=edital
         )
         return int(
             self.consultar(f"SELECT COUNT(*) {_L1_JOINS} WHERE {clausulas}", parametros)[0][0]

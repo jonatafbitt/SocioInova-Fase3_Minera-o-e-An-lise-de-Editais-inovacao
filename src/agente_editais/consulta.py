@@ -1200,6 +1200,11 @@ def fila_listar(
         "--status",
         help="Filtra por status: pendente | resolvida | todas.",
     ),
+    limite: int | None = typer.Option(
+        None,
+        "--limite",
+        help="Limita o número de itens exibidos (paginacao).",
+    ),
 ) -> None:
     """Lista itens da fila com motivo e evidências brutas coletadas."""
     status_normalizado = status.strip().lower()
@@ -1209,10 +1214,14 @@ def fila_listar(
             err=True,
         )
         raise typer.Exit(code=2)
+    if limite is not None and limite < 1:
+        typer.echo(f"ERRO: --limite deve ser ≥ 1 (recebido {limite}).", err=True)
+        raise typer.Exit(code=2)
 
     with uso_manifesto() as manifesto:
         itens = manifesto.consultar_fila(
-            None if status_normalizado == "todas" else status_normalizado
+            None if status_normalizado == "todas" else status_normalizado,
+            limite=limite,
         )
         rotulo_status = status_normalizado
         typer.echo(f"Fila de revisão ({rotulo_status}): {len(itens)} item(ns)")
@@ -1220,9 +1229,10 @@ def fila_listar(
             typer.echo("  (nada a decidir aqui)")
             return
         for item in itens:
+            sigla = item["instituicao_sigla"]
             typer.echo(
                 f"  #{item['id']} [{item['status']}] {item['url_origem']} "
-                f"(portal {item['portal_id']}) motivo={item['motivo']} "
+                f"({sigla}/{item['portal_categoria']}) motivo={item['motivo']} "
                 f"enfileirado_em={item['criado_em']}"
             )
             evidencias = manifesto.evidencias_da_url(item["url_origem"])
@@ -1232,10 +1242,7 @@ def fila_listar(
                     + "; ".join(f"{ev['fonte']} ({ev['localizacao']})" for ev in evidencias)
                 )
                 for ev in evidencias:
-                    valor = ev["valor_bruto"]
-                    if valor and len(valor) > 100:
-                        valor = valor[:100] + "…"
-                    typer.echo(f"      - {ev['fonte']}: {valor}")
+                    typer.echo(f"      - {ev['fonte']}: {ev['valor_bruto']}")
             else:
                 typer.echo("    Evidências: (nenhuma registrada)")
             if item["status"] == "resolvida":
@@ -1428,6 +1435,16 @@ def consultar(
         "--categoria",
         help=f"Categoria do portal de origem ({', '.join(CATEGORIAS)}).",
     ),
+    edital: str | None = typer.Option(
+        None,
+        "--edital",
+        help="Filtra por subtrecho do ID do edital (case-insensitive, ex.: --edital proex-08).",
+    ),
+    limite: int | None = typer.Option(
+        None,
+        "--limite",
+        help="Limita o número de linhas exibidas (paginacao).",
+    ),
     saida: Path | None = typer.Option(
         None,
         "--saida",
@@ -1455,12 +1472,18 @@ def consultar(
         _recusar_flag(
             f"--categoria deve ser uma de: {', '.join(CATEGORIAS)} (recebido {categoria!r})."
         )
+    if edital is not None and not edital.strip():
+        _recusar_flag("--edital exige um subtrecho não vazio (ex.: --edital proex-08).")
+    if limite is not None and limite < 1:
+        _recusar_flag(f"--limite deve ser ≥ 1 (recebido {limite}).")
     _recusar_saida_no_manifesto(saida)
 
     filtros = {
         "instituicao": instituicao.strip() if instituicao else None,
         "ano": ano,
         "categoria": categoria.strip() if categoria else None,
+        "edital": edital.strip() if edital else None,
+        "limite": limite,
     }
 
     caminho_manifesto = _caminho_manifesto()
@@ -1473,8 +1496,19 @@ def consultar(
         raise typer.Exit(code=1)
 
     with uso_manifesto() as manifesto:
-        linhas = manifesto.listar_l1(**filtros)
-        excluidos = manifesto.contar_l1_excluidos(**filtros)
+        linhas = manifesto.listar_l1(
+            instituicao=filtros["instituicao"],
+            ano=filtros["ano"],
+            categoria=filtros["categoria"],
+            edital=filtros["edital"],
+            limite=filtros["limite"],
+        )
+        excluidos = manifesto.contar_l1_excluidos(
+            instituicao=filtros["instituicao"],
+            ano=filtros["ano"],
+            categoria=filtros["categoria"],
+            edital=filtros["edital"],
+        )
         # FR-20: contagens derivam das MESMAS linhas da listagem — nunca de
         # uma segunda contagem paralela que poderia divergir do Manifesto.
         total = len(linhas)
@@ -1497,7 +1531,7 @@ def consultar(
         )
 
         detalhe_evento = {
-            "filtros": filtros,
+            "filtros": {k: v for k, v in filtros.items() if k != "limite"},
             "listados": total,
             "excluidos": excluidos,
             "por_ano_fonte": por_fonte,
@@ -1637,6 +1671,12 @@ def status() -> None:
         typer.echo(f"Seções visitadas:{manifesto.contar_secoes_visitadas()}")
         typer.echo(f"Editais (L1):    {manifesto.contar_editais()}")
         typer.echo(f"Documentos:      {manifesto.contar_documentos()}")
+        texto = manifesto.contar_texto_estagio()
+        typer.echo(
+            f"Texto extraído:  {texto['extraidos']} extraído(s), "
+            f"{texto['escaneados']} escaneado(s), "
+            f"{texto['pendentes']} pendente(s)"
+        )
         typer.echo(
             f"Datados (CAP-3): {manifesto.contar_documentos_datados()} "
             "(automáticos + decididos em fila)"
