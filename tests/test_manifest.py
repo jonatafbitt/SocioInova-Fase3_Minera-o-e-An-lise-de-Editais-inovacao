@@ -15,6 +15,7 @@ from agente_editais.manifest import (
     _MIGRACAO_V2,
     _MIGRACAO_V3,
     _MIGRACAO_V4,
+    _MIGRACAO_V5,
     ErroAberturaManifesto,
     ErroEngineIncompativel,
     ErroManifestoOcupado,
@@ -56,7 +57,7 @@ def test_engine_no_minimo_passa(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sqlite3, "sqlite_version_info", ENGINE_MINIMA)
     manifesto = Manifesto(tmp_path / "m.sqlite3")
     try:
-        assert manifesto.schema_version() == 5  # v1..v5 (CAP-6 + CAP-3)
+        assert manifesto.schema_version() == 6  # v1..v5 (CAP-6 + CAP-3)
     finally:
         manifesto.fechar()
 
@@ -102,7 +103,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
     primeira = Manifesto(caminho)
     try:
         assert primeira.consultar("PRAGMA journal_mode")[0][0] == "wal"
-        assert primeira.schema_version() == 5
+        assert primeira.schema_version() == 6
         objetos = primeira.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         )
@@ -111,7 +112,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
 
     segunda = Manifesto(caminho)
     try:
-        assert segunda.schema_version() == 5
+        assert segunda.schema_version() == 6
         assert segunda.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         ) == objetos
@@ -146,7 +147,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 5
+        assert manifesto.schema_version() == 6
         assert manifesto.contar_instituicoes() == 1, "dados v1 preservados"
         assert manifesto.contar_portais() == 1
         # tabelas da v2/v3 utilizáveis imediatamente após a migração
@@ -162,7 +163,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
     objetos_antes: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 5  # idempotente
+        assert reaberto.schema_version() == 6  # idempotente
         objetos_antes = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -211,7 +212,7 @@ def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 5
+        assert manifesto.schema_version() == 6
         assert manifesto.contar_candidatos() == 1, "candidatos v2 preservados"
         # v3 utilizável: retomada enxerga o candidato herdado
         pendentes = manifesto.candidatos_pdf_do_portal(1)
@@ -224,7 +225,7 @@ def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
     objetos_v3: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 5  # idempotente
+        assert reaberto.schema_version() == 6  # idempotente
         objetos_v3 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -279,7 +280,7 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 5  # migra até a versão atual
+        assert manifesto.schema_version() == 6  # migra até a versão atual
         colunas = {
             linha["name"]
             for linha in manifesto.consultar("PRAGMA table_info(documentos)")
@@ -314,7 +315,7 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
     objetos_v4: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 5  # idempotente
+        assert reaberto.schema_version() == 6  # idempotente
         objetos_v4 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -392,7 +393,7 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 5
+        assert manifesto.schema_version() == 6
         colunas_documentos = {
             linha["name"]
             for linha in manifesto.consultar("PRAGMA table_info(documentos)")
@@ -543,7 +544,7 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
     objetos_v5: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 5  # idempotente
+        assert reaberto.schema_version() == 6  # idempotente
         objetos_v5 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -559,6 +560,241 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
         ) == objetos_v5
     finally:
         quinta.fechar()
+
+
+def _banco_v5_com_documento(caminho) -> None:
+    """Banco da Story 5 (v5) com portal, candidato, edital e documento datado."""
+    bruto = sqlite3.connect(caminho)
+    try:
+        for declaracao in (
+            *_MIGRACAO_V1,
+            *_MIGRACAO_V2,
+            *_MIGRACAO_V3,
+            *_MIGRACAO_V4,
+            *_MIGRACAO_V5,
+        ):
+            bruto.execute(declaracao)
+        bruto.execute(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('S5', 'Instituição Story 5', '2026-01-01T00:00:00+00:00')"
+        )
+        bruto.execute(
+            """
+            INSERT INTO portais (
+                id, instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 1, 'Portal S5', 'integra', 'http://s5.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO candidatos (portal_id, url, tipo, descoberto_em)
+            VALUES (1, 'http://s5.org/x.pdf', 'pdf', '2026-04-04T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+            VALUES ('s5-2023-edital-x', 1, 2023, '2026-04-04T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO documentos (
+                id, edital_id, url_origem, caminho, hash_sha256, data_captura,
+                ano_provisorio, versao_crawler
+            ) VALUES ('jkl456789012', 's5-2023-edital-x', 'http://s5.org/x.pdf',
+                      'corpus/S5/2023/jkl456789012-edital-x.pdf',
+                      ?, '2026-04-04T01:00:00+00:00', 2023, '0.1.0')
+            """,
+            ("d" * 64,),
+        )
+        bruto.execute(
+            "UPDATE documentos SET metodo_datacao = 'url', ano_aceito = 2023 "
+            "WHERE id = 'jkl456789012'"
+        )
+        bruto.execute("PRAGMA user_version = 5")
+        bruto.commit()
+    finally:
+        bruto.close()
+
+
+def test_migracao_v5_para_v6_preserva_dados_e_habilita_l2(tmp_path) -> None:
+    """Banco da Story 5 (v5) abre na v6 com L1 intacto e o estágio L2 operante.
+
+    ``lotes_l2`` recebe a assinatura COMPLETA do instrumento e ``catalogo_l2``
+    impõe FK composta + CHECKs; helpers exercitados ponta a ponta com
+    idempotência (lote reusado pela assinatura; campos substituídos pela PK).
+    """
+    caminho = tmp_path / "story5.sqlite3"
+    _banco_v5_com_documento(caminho)
+
+    assinatura = {
+        "modelo": "modelo-fronteira",
+        "versao_do_modelo": "snap-2026-08",
+        "prompt_versao": "l2-catalogacao-v1",
+        "prompt_sha256": "a" * 64,
+        "temperatura": 0.0,
+        "seed": None,
+        "codebook_sha256": "b" * 64,
+        "versao_agente": "0.1.0",
+        "schema_version": 6,
+    }
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 6
+        tabelas = {
+            linha["name"]
+            for linha in manifesto.consultar(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert {"lotes_l2", "catalogo_l2"} <= tabelas
+
+        # -- L1 preservado intacto -------------------------------------------
+        (documento,) = manifesto.consultar("SELECT * FROM documentos")
+        assert documento["ano_aceito"] == 2023 and documento["metodo_datacao"] == "url"
+        assert documento["hash_sha256"] == "d" * 64
+
+        # -- lote: cria UMA vez e REUSA a mesma assinatura --------------------
+        lote, criado = manifesto.obter_ou_abrir_lote(assinatura)
+        lote_id = int(lote["id"])
+        assert criado is True and lote["status"] == "aberto"
+        lote_de_novo, criado_de_novo = manifesto.obter_ou_abrir_lote(assinatura)
+        assert int(lote_de_novo["id"]) == lote_id and criado_de_novo is False
+        # componente diferente (temperatura) ⇒ NOVO lote
+        variante = dict(assinatura, temperatura=0.7)
+        outro_lote, outro_criado = manifesto.obter_ou_abrir_lote(variante)
+        assert outro_criado is True and int(outro_lote["id"]) != lote_id
+        # seed NULL casa com NULL na busca por assinatura (IS)
+        com_seed = dict(assinatura, seed=42)
+        lote_seed, criou_seed = manifesto.obter_ou_abrir_lote(com_seed)
+        assert criou_seed is True
+        _, reusou_seed = manifesto.obter_ou_abrir_lote(com_seed)
+        assert reusou_seed is False
+
+        # -- catálogo: gravação transacional idempotente + citação verificada --
+        campos = [
+            {
+                "campo": "grau_exemplo",
+                "valor": "2",
+                "documento_id": "jkl456789012",
+                "url_origem": "http://s5.org/x.pdf",
+                "citacao_trecho": "trecho presente no texto extraido",
+                "citacao_pagina": 1,
+                "verificacao": "ok",
+            },
+            {
+                "campo": "tipo_exemplo",
+                "valor": "N/A",
+                "documento_id": None,
+                "url_origem": None,
+                "citacao_trecho": None,
+                "citacao_pagina": None,
+                "verificacao": "ok",
+            },
+        ]
+        assert manifesto.registrar_campos_l2(lote_id, "s5-2023-edital-x", campos) == 2
+        manifesto.registrar_campos_l2(lote_id, "s5-2023-edital-x", campos[:1])
+        linhas = manifesto.consultar(
+            "SELECT * FROM catalogo_l2 WHERE lote_id = ? ORDER BY campo", (lote_id,)
+        )
+        assert len(linhas) == 2, "regravar substitui a própria linha (PK tripla)"
+        assert manifesto.editais_codificados_no_lote(lote_id) == {"s5-2023-edital-x"}
+
+        # -- integridade imposta pelo BANCO ------------------------------------
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO catalogo_l2 (
+                    edital_id, campo, lote_id, valor, verificacao, gravado_em
+                ) VALUES ('s5-2023-edital-x', 'x', ?, 'v', 'outro_status', 'agora')
+                """,
+                (lote_id,),
+            )
+        # valor ≠ N/A exige documento citado (CHECK)
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.executar(
+                """
+                INSERT INTO catalogo_l2 (
+                    edital_id, campo, lote_id, valor, verificacao, gravado_em
+                ) VALUES ('s5-2023-edital-x', 'y', ?, 'N/A-ok?', 'ok', 'agora')
+                """,
+                (lote_id,),
+            )
+        # FK composta recusa documento inexistente
+        with pytest.raises(sqlite3.IntegrityError):
+            manifesto.registrar_campos_l2(
+                lote_id,
+                "s5-2023-edital-x",
+                [
+                    {
+                        "campo": "fantasma",
+                        "valor": "1",
+                        "documento_id": "zzz999999999",
+                        "url_origem": "http://s5.org/x.pdf",
+                        "verificacao": "ok",
+                    }
+                ],
+            )
+
+        # -- fechamento ---------------------------------------------------------
+        assert manifesto.fechar_lote(lote_id) is True
+        assert manifesto.fechar_lote(lote_id) is False, "nunca reconclui"
+        (fechado,) = manifesto.consultar(
+            "SELECT status, concluido_em FROM lotes_l2 WHERE id = ?", (lote_id,)
+        )
+        assert fechado["status"] == "concluido" and fechado["concluido_em"]
+
+        # -- reuso HONESTO de lote concluído: REABERTO até o próximo fechar ----
+        reaberto_lote, criado_reuso = manifesto.obter_ou_abrir_lote(assinatura)
+        assert int(reaberto_lote["id"]) == lote_id and criado_reuso is False
+        assert str(reaberto_lote["status"]) == "aberto", "concluído volta a aberto"
+        assert reaberto_lote["concluido_em"] is None, "finalização zerada no reuso"
+
+        # -- métrica do status: só verificacao='ok' conta -----------------------
+        manifesto.registrar_campos_l2(
+            lote_id,
+            "s5-2023-edital-x",
+            [
+                {
+                    "campo": "campo_invalidado",
+                    "valor": "1",
+                    "documento_id": "jkl456789012",
+                    "url_origem": "http://s5.org/x.pdf",
+                    "citacao_trecho": "trecho fabricado",
+                    "citacao_pagina": None,
+                    "verificacao": "citacao_invalidada",
+                }
+            ],
+        )
+        assert manifesto.contar_catalogo_l2() == 2, "invalidada fica FORA da métrica"
+        assert manifesto.contar_catalogo_l2(lote_id) == 2
+    finally:
+        manifesto.fechar()
+
+    objetos_v6: list | None = None
+    reaberto = Manifesto(caminho)
+    try:
+        assert reaberto.schema_version() == 6  # idempotente
+        objetos_v6 = reaberto.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        assert len(reaberto.consultar("SELECT * FROM lotes_l2")) == 3
+        assert reaberto.contar_catalogo_l2() == 2
+        assert reaberto.contar_documentos() == 1, "L1 segue intacto"
+    finally:
+        reaberto.fechar()
+
+    sexta = Manifesto(caminho)
+    try:
+        assert sexta.consultar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ) == objetos_v6
+    finally:
+        sexta.fechar()
 
 
 def test_registrar_candidato_preenche_ancora_sem_sobrescrever(tmp_path) -> None:
@@ -893,12 +1129,87 @@ def test_status_happy_path_exit0_com_contagens(cli, configs_reais_no_tmp) -> Non
     assert resultado.exit_code == 0, resultado.output
     saida = resultado.output + (resultado.stderr or "")
     assert "SQLite engine:" in saida
-    assert "Schema version:  5" in saida
+    assert "Schema version:  6" in saida
     assert re.search(r"Instituições:\s+\d+", saida)
     assert re.search(r"Portais:\s+\d+", saida)
     # contagens da descoberta visíveis no status
     assert re.search(r"Candidatos:\s+\d+", saida)
     assert re.search(r"Seções visitadas:\s*\d+", saida)
+    # catálogo L2 visível com a métrica de campos válidos (verificacao='ok')
+    assert re.search(r"Catálogo L2:\s+\d+ campo\(s\) válido\(s\)", saida)
+
+
+def test_status_mostra_so_os_campos_validos_do_catalogo_l2(
+    cli, configs_reais_no_tmp, tmp_path
+) -> None:
+    """A linha do status deriva de contar_catalogo_l2 (verificacao='ok')."""
+    assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
+
+    assinatura = {
+        "modelo": "m",
+        "versao_do_modelo": "",
+        "prompt_versao": "l2-catalogacao-v1",
+        "prompt_sha256": "a" * 64,
+        "temperatura": 0.0,
+        "seed": None,
+        "codebook_sha256": "b" * 64,
+        "versao_agente": "0.1.0",
+        "schema_version": 6,
+    }
+    with Manifesto(configs_reais_no_tmp.manifesto) as manifesto:
+        manifesto.executar(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('L2S', 'Instituto L2 Status', '2026-01-01T00:00:00+00:00')"
+        )
+        manifesto.executar(
+            """
+            INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+            VALUES ('l2s-2023-e', 1, 2023, '2026-01-01T00:00:00+00:00')
+            """
+        )
+        manifesto.executar(
+            """
+            INSERT INTO documentos (
+                id, edital_id, url_origem, caminho, hash_sha256,
+                data_captura, ano_provisorio, versao_crawler
+            ) VALUES ('stu123456789', 'l2s-2023-e', 'http://s.org/a.pdf',
+                      ?, ?, '2026-01-01T00:00:00+00:00', 2023, '0.1.0')
+            """,
+            ("corpus/a.pdf", "e" * 64),
+        )
+        lote, _criado = manifesto.obter_ou_abrir_lote(assinatura)
+        manifesto.registrar_campos_l2(
+            int(lote["id"]),
+            "l2s-2023-e",
+            [
+                {
+                    "campo": "ok_exemplo",
+                    "valor": "N/A",
+                    "documento_id": None,
+                    "url_origem": None,
+                    "citacao_trecho": None,
+                    "citacao_pagina": None,
+                    "verificacao": "ok",
+                },
+                {
+                    "campo": "invalido_exemplo",
+                    "valor": "2",
+                    "documento_id": "stu123456789",
+                    "url_origem": "http://s.org/a.pdf",
+                    "citacao_trecho": "fabricado",
+                    "citacao_pagina": None,
+                    "verificacao": "citacao_invalidada",
+                },
+            ],
+        )
+
+    resultado = cli.invoke(app, ["status"])
+
+    assert resultado.exit_code == 0
+    saida = resultado.output + (resultado.stderr or "")
+    assert re.search(r"Catálogo L2:\s+1 campo\(s\) válido\(s\)", saida), (
+        "apenas a linha verificacao='ok' entra na métrica"
+    )
 
 
 def test_cli_mapa_validar_com_lock_segurado_sai_4(cli, configs_reais_no_tmp) -> None:

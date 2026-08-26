@@ -5,16 +5,16 @@ portais institucionais da **Rede Federal EPCT** — piloto de pesquisa
 acadêmica (PPGCS/UFBA). Pipeline em lotes orientado ao Manifesto SQLite;
 nenhum serviço residente, nenhum scheduler (spine AD-1).
 
-> **Escopo atual (Story 6):** fundação + Mapa-Mestre + pré-voo + descoberta
+> **Escopo atual (Story 7):** fundação + Mapa-Mestre + pré-voo + descoberta
 > híbrida (CAP-2) + **coleta de PDFs** (CAP-4) + **texto por documento**
 > (CAP-6) + **datação multi-fonte com fila humana** (CAP-3): evidência bruta
 > por fonte consultada (`url`/`ancora`/`pdf_meta`), regras de aceite na
 > janela 2019–2026 e Fila de Revisão Manual com decisão fundamentada +
-> **consulta e exportação ONLY-leitura** (CAP-9/UJ-3/§10): `consultar` com
-> contagens coerentes e CSV, `custodia --edital` com a cadeia completa em
-> JSON (schema v5). `<time>`/CSS, backfill Wayback, OCR, catálogo L2 e a
-> view pública são passos futuros — `metodo_datacao` só é preenchido pelo
-> aceite da datação.
+> **consulta e exportação ONLY-leitura** (CAP-9/UJ-3/§10) + **catálogo
+> analítico L2** (CAP-7): codebook com três phase-gates bloqueantes,
+> instrumento congelado por lote e verificação citação↔texto na gravação
+> (schema v6). `<time>`/CSS, backfill Wayback, OCR e a view pública são
+> passos futuros — `metodo_datacao` só é preenchido pelo aceite da datação.
 
 ## Instalação
 
@@ -39,6 +39,9 @@ uv run agente-editais textuar --portal IFBA     # CAP-6 para os portais da sigla
 uv run agente-editais textuar --todos           # CAP-6 para todos os portais
 uv run agente-editais datar --portal IFBA       # CAP-3 para os portais da sigla
 uv run agente-editais datar --todos             # CAP-3 para todos os portais
+uv run agente-editais analise --portal IFBA --modelo MODELO   # CAP-7 (exige codebook congelado)
+uv run agente-editais analise --todos --modelo MODELO \
+    --temperatura 0.0 --seed 42 --tentativas 2  # instrumento completo do lote
 uv run agente-editais fila listar               # itens pendentes com motivo e evidências
 uv run agente-editais fila decidir --id 1 --ano 2023 \
     --justificativa "Capa declara 2023." --autor "Pesquisadora"
@@ -218,6 +221,98 @@ Publicação no Portal consultando TODAS as fontes locais disponíveis:
 - **Movimentação física** dos PDFs de `_sem_ano/` para a pasta do ano
   definitivo fica para decisão futura — nesta etapa só o banco muda.
 
+### Análise L2 — catálogo analítico com instrumento congelado (CAP-7)
+
+`analise` codifica cada **Edital** (unidade de processamento) no Catálogo L2
+via provedor LLM isolado atrás do adaptador único (`llm_adapter.py` — AD-6;
+nenhum SDK, transporte OpenAI-compatível por `requests`).
+
+> ⚠️ **O CONTEÚDO CIENTÍFICO do codebook é do(a) pesquisador(a).** O arquivo
+> `configs/codebook.yaml` versionado traz apenas o ESQUEMA + um EXEMPLO
+> mínimo rotulado `EXEMPLO`. Antes do primeiro lote, substitua-o pelo Quadro
+> Conceitual-Analítico real da tese.
+
+#### Os três phase-gates (bloqueiam EM CÓDIGO — AD-6)
+
+O comando recusa rodar (**exit 2, antes de qualquer chamada ao provedor**)
+enquanto o codebook.yaml não tiver:
+
+1. **Congelamento completo** — bloco `congelamento:` com `congelado_em`
+   (data ISO 8601) e `congelado_por` (autoria);
+2. **Tríade de Dahlin resolvida** (OQ-6) — `trietica_dahlin.resolvida: true`;
+3. **Limiar de Acordo Humano-Máquina fixado a priori** (OQ-5) —
+   `acordo_humano_maquina.limiar_kappa:` entre 0 e 1 (assumido κ ≥ 0,75).
+
+A mensagem de erro nomeia QUAL gate está pendente.
+
+#### Como congelar (passo a passo)
+
+1. Substitua o conteúdo `EXEMPLO` de `dimensoes:` pelas dimensões/campos
+   reais do Quadro (cada campo: escala ordinal/nominal, definição
+   operacional, regra de decisão, N/A, âncoras positiva/negativa e regra de
+   boilerplate; ids em `[a-z0-9_]+`, únicos);
+2. Rode `uv run agente-editais analise --todos --modelo MODELO` para conferir
+   que os gates pendentes são os esperados (nada toca o provedor);
+3. Preencha os três blocos marcados "PREENCHER" (`congelamento`,
+   `trietica_dahlin`, `acordo_humano_maquina`);
+4. **Faça COMMIT no git** (AD-9): o hash SHA-256 do arquivo é registrado em
+   cada lote (`codebook_sha256`) — alterar o codebook muda o hash ⇒ novo
+   instrumento ⇒ novo lote.
+
+#### Instrumento congelado por lote (FR-18)
+
+Cada execução abre/continua UM lote cuja assinatura completa mora em
+`lotes_l2`: modelo, versão do modelo (env `LLM_VERSAO_MODELO`; vazio =
+provedor sem versão explícita), versão + hash do prompt-template,
+temperatura, seed, `codebook_sha256`, versão do agente e schema. Mesma
+assinatura **continua o lote** pulando editais já codificados (retomada
+idempotente); um lote já **concluído** com a mesma assinatura é REABERTO
+(`status='aberto'`, `concluido_em=NULL`) e re-concluído no fim da rodada — a
+delimitação nunca mente sobre conclusão; qualquer componente diferente
+**abre NOVO lote** — as linhas do catálogo são delimitadas por `lote_id`.
+O hash do codebook registrado (`codebook_sha256`) cobre os MESMOS bytes
+parseados na execução (leitura única — o instrumento registrado é o executado).
+
+#### Verificação citação↔texto (antídoto a alucinação)
+
+Todo valor ≠ `N/A` exige citação-evidência (documento citado + trecho
+literal). No caminho de gravação, o trecho normalizado (caixa/espaços) é
+buscado no `.txt` do documento citado; a página vem da convenção do extrator
+único (segmentos separados por `\n`). Trecho inexistente ⇒ campo gravado com
+`verificacao='citacao_invalidada'` — custódia preservada, fora do catálogo
+válido. Saída inválida ao esquema derivado do codebook é reprocessada até
+`--tentativas` (default 2, teto 10) e **JAMAIS gravada**; esgotadas as
+tentativas por esquema, o edital vira evento `analise_invalida` e o lote
+segue (exit 0).
+**Limitação de proveniência de página:** quando o trecho citado cruza a
+fronteira `\n` entre duas páginas, a página gravada é a do PRIMEIRO caractere
+casado — não há registro de span multi-página.
+
+#### Regras operacionais
+
+- **Credenciais exigidas antes de tudo:** após os gates, o comando verifica
+  `LLM_BASE_URL` e `LLM_API_KEY` e recusa (exit 2) ANTES de abrir o banco ou
+  o lote — credencial ausente nunca vira lote aberto cheio de erros.
+- Consumo exclusivo do TEXTO_EXTRAIDO com vigência triple-check (hash do PDF
+  vigente + `.txt` presente); documento cujos bytes derivaram depois da
+  extração sai da entrada com evento (`texto_indisponivel`);
+  `flag_escaneado=1` é pulado com evento `analise_escaneado_sem_ocr` —
+  edital integralmente escaneado vira erro dedicado até existir OCR
+  (pré-requisito futuro); OCR automático NÃO existe.
+- Textos de todos os documentos não excluídos do edital alimentam UMA
+  chamada, ordenados por `data_captura, rowid` (FR-17: captura posterior
+  prevalece na consolidação).
+- **Exclusão PARCIAL:** a decisão humana é POR DOCUMENTO. Edital com apenas
+  PARTE dos documentos excluídos SEGUE no lote com os documentos restantes;
+  só a exclusão de TODOS os documentos tira o edital do lote (contado como
+  excluído no resumo/evento).
+- Falha do provedor (rede/HTTP/timeout/prazo total) consome o MESMO orçamento
+  de `--tentativas`: blip seguido de resposta válida codifica normalmente;
+  esgotadas as tentativas por provedor, vira evento `analise_erro`
+  (motivo='provedor') para o edital e o lote segue — exit 0 com perdas
+  registradas.
+- Segredos NUNCA em config versionada, hash ou evento: a chave só via env.
+
 ### Consulta e exportação (CAP-9)
 
 Dois comandos **ONLY-leitura** sobre os dados do Manifesto (AD-3/AD-4):
@@ -295,9 +390,9 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 
 | Código | Significado |
 | ------ | ----------- |
-| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta, textuar e datar com falhas por portal/documento, e `consultar`/`custodia` com zero resultados) |
-| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`/`textuar`/`datar`, portal ausente do Manifesto; item de fila inexistente ou já resolvido no `fila decidir`; Manifesto inexistente ou edital desconhecido no `consultar`/`custodia`; falha de escrita do CSV/JSON) |
-| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml, ou flags malformadas do `descobrir`/`coletar`/`textuar`/`datar` (`--portal` vazio, `--portal` com `--todos`), da decisão na fila (`fila decidir`: sem justificativa/autoria, destino ausente ou duplo, ano fora da janela), do filtro de listagem (`fila listar --status` inválido), dos filtros do `consultar` (`--instituicao` vazia, `--categoria` fora do CHECK, `--ano` fora de 2019–2026) e do `custodia` (`--edital` vazio) — todos validados antes de abrir o banco; também `--saida` apontando para o próprio Manifesto no `consultar`/`custodia` |
+| 0 | sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta, textuar, datar e analise com falhas por portal/edital/documento — o lote segue —, e `consultar`/`custodia` com zero resultados) |
+| 1 | erro operacional (Manifesto ausente, banco mais novo que o agente, falha de abertura, janela off-peak exigida fora da janela — probe ou crawling, sigla desconhecida no `descobrir`/`coletar`/`textuar`/`datar`/`analise`, portal ausente do Manifesto; item de fila inexistente ou já resolvido no `fila decidir`; Manifesto inexistente ou edital desconhecido no `consultar`/`custodia`; falha de escrita do CSV/JSON) |
+| 2 | configuração inválida — mapa-mestre.toml **ou** politeness.toml **ou** codebook.yaml (inclui os phase-gates do L2 pendentes: congelamento/Dahlin/κ — o `analise` recusa ANTES do provedor), ou flags malformadas do `descobrir`/`coletar`/`textuar`/`datar` (`--portal` vazio, `--portal` com `--todos`), da decisão na fila (`fila decidir`: sem justificativa/autoria, destino ausente ou duplo, ano fora da janela), do filtro de listagem (`fila listar --status` inválido), dos filtros do `consultar` (`--instituicao` vazia, `--categoria` fora do CHECK, `--ano` fora de 2019–2026), do `custodia` (`--edital` vazio) e do `analise` (--modelo ausente sem LLM_MODELO, --temperatura fora de [0, 2], --tentativas < 1) — todos validados antes de abrir o banco; também `--saida` apontando para o próprio Manifesto no `consultar`/`custodia` |
 | 3 | engine SQLite abaixo do guard ≥ 3.51.3 |
 | 4 | Manifesto ocupado por outro processo |
 
@@ -312,6 +407,10 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
   que suspende um host (`max_403_consecutivos`); além do limiar de PDF
   escaneado (`[texto] limiar_chars_por_pagina`, default 100) usado pelo
   extrator único.
+- `configs/codebook.yaml` — codebook do catálogo L2 + os três phase-gates
+  (CAP-7). Versionado em git; o hash do arquivo registra-se em cada lote —
+  alteração exige commit e abre novo instrumento (AD-9). O conteúdo
+  científico é do(a) pesquisador(a); o versionado traz só ESQUEMA + EXEMPLO.
 - `dados/manifesto.sqlite3` — Manifesto (estado único; criado no primeiro
   comando que grava). **Fora do git**; backup = copiar pasta após
   `PRAGMA wal_checkpoint(TRUNCATE)`.
@@ -325,6 +424,18 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
 | `AGENTE_EDITAIS_CONFIGS` | `<raiz>/configs` | diretório dos configs |
 | `AGENTE_EDITAIS_MANIFESTO` | `<raiz>/dados/manifesto.sqlite3` | caminho do Manifesto |
 | `AGENTE_EDITAIS_CORPUS` | `<raiz>/corpus` | raiz do corpus de PDFs |
+| `LLM_BASE_URL` | — (obrigatório p/ `analise`) | base da API OpenAI-compatível do provedor |
+| `LLM_API_KEY` | — (obrigatória p/ `analise`) | chave Bearer — segredo, NUNCA em config/log/evento |
+| `LLM_MODELO` | — | modelo default quando `analise` roda sem `--modelo` |
+| `LLM_VERSAO_MODELO` | vazio | snapshot/versionamento declarado do modelo (registrado no lote) |
+| `LLM_TIMEOUT_S` | `120` | prazo total (s) de cada chamada ao provedor |
+
+Coloque as credenciais no ambiente antes de rodar `analise` — exporte-as
+direto no shell ou use o mecanismo de segredos da sua preferência. O projeto
+NÃO carrega `.env` automaticamente (não há dependência de dotenv): se mantiver
+um arquivo `.env` gitignored com as variáveis, é preciso carregá-lo por conta
+própria antes da execução (ex.: `set -a; source .env; set +a` em bash). Nenhuma
+delas aparece em logs, eventos ou mensagens de erro.
 
 ## Desenvolvimento
 

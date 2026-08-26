@@ -2,28 +2,34 @@
 
 Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir``,
 ``coletar``, ``textuar``, ``datar``, ``fila listar|decidir``, ``consultar``,
-``custodia`` e ``status``.
+``custodia``, ``analise`` e ``status``.
 
 Códigos de saída:
 - 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta,
-       textuação e datação com falhas por portal/URL/documento — o lote segue,
-       FR-2/CAP-4/CAP-6/CAP-3; ``consultar``/``custodia`` com zero resultados);
+       textuação, datação e ANÁLISE com falhas por portal/edital/documento —
+       o lote segue, FR-2/CAP-4/CAP-6/CAP-3/CAP-7; ``consultar``/``custodia``
+       com zero resultados);
 - 1  erro operacional genérico: Manifesto inexistente no ``status``/
        ``consultar``/``custodia``, Manifesto mais novo que o agente, falha de
        abertura do banco, violação de janela off-peak (pré-voo exigente OU
        crawling), sigla desconhecida no ``descobrir``/``coletar``/``textuar``/
-       ``datar`` ou portal ausente do Manifesto; item de fila inexistente ou
-       já resolvido no ``fila decidir``; edital inexistente no ``custodia``;
-       falha de escrita do CSV/JSON no ``consultar``/``custodia``;
-- 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml
-       e politeness.toml (nada é escrito; banco intocado) — ou flags
-       malformadas: --portal/--todos dos comandos de lote, decisão inválida
-       no ``fila decidir`` (sem justificativa/autoria, destino ausente ou
-       duplo, ano fora da janela 2019–2026), ``--status`` inválido no
-       ``fila listar``, filtros malformados no ``consultar`` (--instituicao
-       vazia, --categoria fora do CHECK do banco, --ano fora de 2019–2026)
-       e ``--edital`` vazio no ``custodia`` — todos validados ANTES de abrir
-       o banco; ``--saida`` apontando para o próprio Manifesto no
+       ``datar``/``analise`` ou portal ausente do Manifesto; item de fila
+       inexistente ou já resolvido no ``fila decidir``; edital inexistente no
+       ``custodia``; falha de escrita do CSV/JSON no ``consultar``/
+       ``custodia``;
+- 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml,
+       politeness.toml e CODEBOOK.YAML (nada é escrito; banco intocado) —
+       inclui os PHASE-GATES do L2 (congelamento/Dahlin/κ ausentes no
+       codebook.yaml, AD-6; o ``analise`` recusa ANTES de tocar o provedor)
+       — ou flags malformadas: --portal/--todos dos comandos de lote, decisão
+       inválida no ``fila decidir`` (sem justificativa/autoria, destino
+       ausente ou duplo, ano fora da janela 2019–2026), ``--status`` inválido
+       no ``fila listar``, filtros malformados no ``consultar``
+       (--instituicao vazia, --categoria fora do CHECK do banco, --ano fora
+       de 2019–2026), ``--edital`` vazio no ``custodia`` e flags do
+       ``analise`` (--modelo/LLM_MODELO ausente, --temperatura fora de
+       [0, 2], --tentativas < 1) — todos validados ANTES de abrir o banco;
+       ``--saida`` apontando para o próprio Manifesto no
        ``consultar``/``custodia`` (o export truncaria o banco);
 - 3  engine SQLite abaixo do guard AD-10;
 - 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
@@ -42,6 +48,15 @@ from typing import Iterator
 
 import typer
 
+from . import __version__, llm_adapter
+from .analise import (
+    ContextoAnalise,
+    ResumoAnalisePortal,
+    PROMPT_VERSAO,
+    analisar_portal,
+    montar_prompt_sistema,
+)
+from .codebook import Codebook, ErroCodebook, carregar_codebook_de_bytes, hash_de_bytes
 from .coleta import ContextoColeta, ResumoColetaPortal, coletar_portal, limpar_temporarios
 from .datacao import ContextoDatacao, ResumoDatacaoPortal, datar_portal
 from .descoberta import ContextoPortal, ResumoPortal, navegar_portal
@@ -89,6 +104,10 @@ app.add_typer(fila_app, name="fila")
 
 _ANO_MINIMO, _ANO_MAXIMO = 2019, 2026
 _STATUS_FILA = ("pendente", "resolvida")
+# Intervalo INTEGER do SQLite (assinado 64 bits) — seeds fora dele seriam
+# recusadas pelo banco só DEPOIS do lote aberto; valida-se ANTES (exit 2).
+_SEED_MINIMA = -(2**63)
+_SEED_MAXIMA = 2**63 - 1
 
 ENV_CONFIGS = "AGENTE_EDITAIS_CONFIGS"
 ENV_MANIFESTO = "AGENTE_EDITAIS_MANIFESTO"
@@ -160,6 +179,45 @@ def _carregar_polidez_segura() -> tuple[Polidez, Path]:
     except ErroConfigPolidez as exc:
         typer.echo(f"ERRO: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+
+
+def _carregar_codebook_seguro() -> tuple[Codebook, Path, str]:
+    """Codebook válido + hash DOS MESMOS bytes, ou exit 2 antes de qualquer
+    rede/provedor/banco (AD-6/AD-9).
+
+    TOCTOU: os bytes são lidos UMA vez; o parse acontece sobre eles e o
+    ``codebook_sha256`` devolvido é o hash DELES — o instrumento registrado
+    no lote é exatamente o executado, mesmo se o arquivo mudar depois.
+    """
+    caminho = _dir_configs() / "codebook.yaml"
+    try:
+        conteudo = caminho.read_bytes()
+    except OSError as exc:
+        typer.echo(f"ERRO: {caminho}: não foi possível ler o arquivo ({exc}).", err=True)
+        raise typer.Exit(code=2) from exc
+    try:
+        return (
+            carregar_codebook_de_bytes(conteudo, caminho),
+            caminho,
+            hash_de_bytes(conteudo),
+        )
+    except ErroCodebook as exc:
+        for problema in exc.problemas:
+            typer.echo(f"ERRO: {problema}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+def _credenciais_provedor_ausentes() -> list[str]:
+    """Env do provedor exigidas ANTES de abrir banco/lote (fail-fast).
+
+    Sem este preflight, a credencial ausente só apareceria DENTRO do adapter
+    — com o lote já aberto e um edital cheio de erros pela frente.
+    """
+    ausentes = []
+    for nome in (llm_adapter.ENV_BASE_URL, llm_adapter.ENV_CHAVE):
+        if not os.environ.get(nome, "").strip():
+            ausentes.append(nome)
+    return ausentes
 
 
 @mapa_app.command("validar")
@@ -923,6 +981,240 @@ def _recusar_decisao(mensagem: str) -> None:
     raise typer.Exit(code=2)
 
 
+@app.command()
+def analise(
+    portal: str = typer.Option(
+        None,
+        "--portal",
+        help="Sigla da instituição cujos portais serão analisados (ex.: IFBA).",
+    ),
+    todos: bool = typer.Option(False, "--todos", help="Analisa todos os portais do Mapa-Mestre."),
+    modelo: str = typer.Option(
+        None,
+        "--modelo",
+        help="Modelo do instrumento LLM; default vem de LLM_MODELO (OQ-1).",
+    ),
+    temperatura: float = typer.Option(
+        0.0, "--temperatura", min=0.0, max=2.0, help="Temperatura da chamada (default 0.0)."
+    ),
+    seed: int | None = typer.Option(None, "--seed", help="Seed determinística do provedor."),
+    tentativas: int = typer.Option(
+        2,
+        "--tentativas",
+        min=1,
+        max=10,
+        help="Tentativas TOTAIS por edital quando a saída violar o esquema ou o "
+        "provedor falhar (default 2; teto 10).",
+    ),
+) -> None:
+    """CAP-7: codifica editais no Catálogo L2 com instrumento congelado.
+
+    Phase-gates BLOQUEANTES (AD-6): recusa (exit 2) ANTES de qualquer
+    chamada ao provedor enquanto o codebook.yaml não tiver congelamento
+    completo, Tríade de Dahlin resolvida e limiar κ fixado a priori — a
+    mensagem nomeia o gate faltante. Cada edital recebe UMA chamada
+    (textos vigentes em ordem cronológica de captura); saída inválida ao
+    esquema é reprocessada até --tentativas e JAMAIS gravada; citação
+    inexistente no texto citado grava o campo como 'citacao_invalidada'
+    (FR-18). Mesma assinatura continua o lote aberto pulando editais já
+    codificados; componente diferente ⇒ novo lote. Falhas pontuais viram
+    eventos e o lote segue (exit 0).
+    """
+    if todos == (portal is not None):
+        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
+        raise typer.Exit(code=2)
+    if portal is not None and not portal.strip():
+        typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
+        raise typer.Exit(code=2)
+
+    mapa, caminho_mapa = _carregar_mapa_seguro()
+    codebook, _caminho_codebook, codebook_sha256 = _carregar_codebook_seguro()
+
+    # PHASE-GATES (AD-6): bloqueiam ANTES de tocar rede/provedor — exit 2
+    # nomeando o gate faltante; ZERO chamadas ao LLM neste caminho.
+    pendentes = codebook.gates_pendentes()
+    if pendentes:
+        for gate in pendentes:
+            typer.echo(f"ERRO: {gate}", err=True)
+        raise typer.Exit(code=2)
+
+    # Preflight de credenciais (fail-fast): sem BASE_URL/chave o lote abriria
+    # e todo edital viraria erro dentro do adapter. Recusa ANTES de abrir
+    # banco/lote/provedor (exit 2).
+    ausentes_env = _credenciais_provedor_ausentes()
+    if ausentes_env:
+        for nome in ausentes_env:
+            typer.echo(
+                f"ERRO: variável de ambiente '{nome}' não definida ou vazia — "
+                "configure as credenciais do provedor LLM antes de analisar.",
+                err=True,
+            )
+        raise typer.Exit(code=2)
+
+    modelo_efetivo = (modelo or "").strip() or os.environ.get(llm_adapter.ENV_MODELO, "").strip()
+    if not modelo_efetivo:
+        _recusar_flag("--modelo é obrigatório (ou defina a variável de ambiente LLM_MODELO).")
+    versao_do_modelo = os.environ.get(llm_adapter.ENV_VERSAO_DO_MODELO, "").strip()
+    if seed is not None and not (_SEED_MINIMA <= seed <= _SEED_MAXIMA):
+        _recusar_flag(
+            f"--seed {seed} está fora do intervalo INTEGER do SQLite "
+            f"({_SEED_MINIMA} a {_SEED_MAXIMA})."
+        )
+    try:
+        llm_adapter.definir_instrumento(
+            modelo=modelo_efetivo,
+            temperatura=temperatura,
+            seed=seed,
+        )
+    except ValueError as exc:
+        _recusar_flag(str(exc))
+
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, p)
+        for instituicao in mapa.instituicao
+        for p in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        if todos:
+            typer.echo(
+                "ERRO: nenhum portal no Mapa-Mestre — cadastre instituições e "
+                "portais no mapa antes de analisar.",
+                err=True,
+            )
+        else:
+            siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas_conhecidas}.",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+
+    mapa_sha256 = hash_arquivo(caminho_mapa)
+
+    resumos: list[ResumoAnalisePortal] = []
+    with uso_manifesto() as manifesto:
+        contextos: list[ContextoAnalise] = []
+        ausentes: list[str] = []
+        for instituicao, p in pares:
+            id_portal = manifesto.id_portal_por_url(p.url)
+            if id_portal is None:
+                ausentes.append(f"[{instituicao.sigla}] {p.url}")
+                continue
+            contextos.append(ContextoAnalise(instituicao.sigla, p, id_portal))
+        if ausentes:
+            typer.echo(
+                "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                f"'agente-editais mapa validar' antes de analisar: {'; '.join(ausentes)}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        sistema, prompt_sha256 = montar_prompt_sistema(codebook)
+        assinatura = {
+            "modelo": modelo_efetivo,
+            "versao_do_modelo": versao_do_modelo,
+            "prompt_versao": PROMPT_VERSAO,
+            "prompt_sha256": prompt_sha256,
+            "temperatura": temperatura,
+            "seed": seed,
+            "codebook_sha256": codebook_sha256,
+            "versao_agente": __version__,
+            "schema_version": manifesto.schema_version(),
+        }
+        lote, criado = manifesto.obter_ou_abrir_lote(assinatura)
+        lote_id = int(lote["id"])
+        manifesto.registrar_evento(
+            tipo="lote_l2" if criado else "lote_l2_continuado",
+            comando="analise",
+            detalhe={
+                "lote_id": lote_id,
+                **assinatura,
+                "status": str(lote["status"]),
+            },
+        )
+
+        for contexto in contextos:
+            resumos.append(
+                analisar_portal(
+                    contexto,
+                    manifesto,
+                    codebook,
+                    sistema=sistema,
+                    lote_id=lote_id,
+                    tentativas=tentativas,
+                    comando="analise",
+                )
+            )
+        fechou = manifesto.fechar_lote(lote_id)
+        # Chave ÚNICA com analise_portal_concluida (Resumo.totalizar):
+        # 'pulados_ja_codificados' — contadores idênticos em ambos os eventos.
+        totais = {
+            "editais": sum(r.editais for r in resumos),
+            "codificados": sum(r.codificados for r in resumos),
+            "pulados_ja_codificados": sum(r.pulados for r in resumos),
+            "invalidos": sum(r.invalidos for r in resumos),
+            "erros": sum(r.erros for r in resumos),
+            "excluidos": sum(r.excluidos for r in resumos),
+            "escaneados_sem_ocr": sum(r.escaneados_sem_ocr for r in resumos),
+        }
+        manifesto.registrar_evento(
+            tipo="analise_concluido",
+            comando="analise",
+            detalhe={
+                "portais": len(resumos),
+                "alvo": "--todos" if todos else alvo,
+                "lote_id": lote_id,
+                "lote_fechado": fechou,
+                "modelo": modelo_efetivo,
+                "temperatura": temperatura,
+                "seed": seed,
+                "codebook_sha256": codebook_sha256,
+                "prompt_versao": PROMPT_VERSAO,
+                "prompt_sha256": prompt_sha256,
+                "mapa_sha256": mapa_sha256,
+                "totais": totais,
+                "editais_perdidos": [
+                    edital
+                    for resumo in resumos
+                    for edital in resumo.editais_perdidos
+                ],
+            },
+        )
+
+    for resumo in resumos:
+        typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+        typer.echo(
+            f"  Editais: {resumo.editais} "
+            f"(codificados: {resumo.codificados}, já codificados: {resumo.pulados}, "
+            f"inválidos: {resumo.invalidos}, erros: {resumo.erros}, "
+            f"excluídos: {resumo.excluidos})"
+        )
+        if resumo.escaneados_sem_ocr:
+            typer.echo(
+                f"  Documentos escaneados pulados (sem OCR): {resumo.escaneados_sem_ocr}"
+            )
+        for perdido in resumo.editais_perdidos:
+            typer.echo(f"  Perdido:    {perdido}")
+
+    typer.echo("")
+    typer.echo(
+        f"Análise concluída (lote #{lote_id}): {len(resumos)} portal(is), "
+        f"{totais['codificados']} edital(is) codificado(s), "
+        f"{totais['excluidos']} excluído(s), "
+        f"{totais['invalidos']} inválido(s), {totais['erros']} erro(s) "
+        "(eventos no Manifesto; lote não abortado por falhas pontuais)."
+    )
+
+
+def _recusar_flag(mensagem: str) -> None:
+    """Flag malformada: recusa ANTES de abrir o banco (exit 2)."""
+    typer.echo(f"ERRO: {mensagem}", err=True)
+    raise typer.Exit(code=2)
+
+
 @fila_app.command("listar")
 def fila_listar(
     status: str = typer.Option(
@@ -1385,6 +1677,10 @@ def status() -> None:
         typer.echo(
             f"Datados (CAP-3): {manifesto.contar_documentos_datados()} "
             "(automáticos + decididos em fila)"
+        )
+        typer.echo(
+            f"Catálogo L2:     {manifesto.contar_catalogo_l2()} campo(s) válido(s) "
+            "(verificacao='ok'; invalidados ficam fora da contagem)"
         )
         typer.echo(
             f"Fila revisão:    {manifesto.contar_fila('pendente')} pendente(s), "

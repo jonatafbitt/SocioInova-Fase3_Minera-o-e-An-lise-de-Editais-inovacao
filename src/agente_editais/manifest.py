@@ -43,7 +43,24 @@ Story 6 adiciona superfícies ONLY-leitura de consulta (CAP-9/UJ-3/§10):
 decidido_ano)`` e origem explícita ``ano_fonte``, excluídos fora da
 listagem mas contáveis) e ``custodia_do_edital`` (cadeia captura →
 datação → fila montada inteira do banco — nenhum PDF é lido, AD-4).
-Nenhuma migração nova: schema v5 vigente.
+
+Story 7 adiciona a migração v6 (CAP-7): ``lotes_l2`` — assinatura COMPLETA
+do instrumento congelado por lote (FR-18/AD-6): modelo, versao_do_modelo,
+prompt_versao + prompt_sha256, temperatura, seed, codebook_sha256,
+versao_agente e schema_version sob UNIQUE composto (a retomada reencontra o
+lote pela assinatura exata; qualquer componente diferente ⇒ NOVO lote,
+delimitação explícita das linhas por lote_id); e ``catalogo_l2`` — PK
+(edital_id, campo, lote_id) que dá idempotência à gravação por edital, FK
+COMPOSTA para o documento citado (documento_id, url_origem), citação-evidência
+(trecho literal + página) e ``verificacao`` CHECK ok|citacao_invalidada — o
+antídoto a alucinação (FR-18): campo com citação inexistente no texto nasce
+marcado e fora do catálogo válido, sem perder custódia.
+Helpers transacionais do estágio: ``obter_ou_abrir_lote`` (mesma assinatura
+continua o lote; só cria quando nenhuma casa), ``registrar_campos_l2``
+(transação ÚNICA por edital, INSERT OR REPLACE pela PK), ``fechar_lote``,
+``editais_codificados_no_lote`` (pulo idempotente da retomada) e
+``documentos_do_portal_para_analise`` (leitura com a exclusão VIGENTE da
+fila já resolvida por documento).
 
 Convenções do spine: placeholders qmark; datas como texto ISO 8601 com
 timezone; tabelas no plural; nenhuma API removida/deprecada do Python 3.14.
@@ -63,7 +80,7 @@ from agente_editais import __version__
 ENGINE_MINIMA = (3, 51, 3)
 LOCK_TIMEOUT_MS = 1_500
 
-SCHEMA_VERSAO_ATUAL = 5
+SCHEMA_VERSAO_ATUAL = 6
 
 # Cada declaração é executada isoladamente dentro da transação exclusiva de
 # startup — gatilhos têm ';' no corpo e não podem ser divididos por split.
@@ -235,12 +252,67 @@ _MIGRACAO_V5: tuple[str, ...] = (
     "ALTER TABLE candidatos ADD COLUMN texto_ancora TEXT",
 )
 
+# Story 7 (CAP-7): lote = instrumento congelado (FR-18/AD-6) e catálogo com
+# verificação de citação no caminho de gravação (FR-18). ``lotes_l2`` carrega
+# a assinatura INTEIRA do instrumento sob UNIQUE — a retomada reencontra o
+# lote aberto pela assinatura exata e qualquer componente diferente nasce em
+# outro lote (delimitação explícita por lote_id). ``seed`` pode ser NULL
+# (provedores sem seed fixa): a busca por assinatura usa IS, que casa NULL
+# com NULL — o UNIQUE do banco trata NULLs como distintos, mas o lock AD-3
+# garante processo único, então a idempotência vale na camada de aplicação.
+# ``catalogo_l2``: valor é TEXT uniforme ('0'/'1'/'2' ordinais; rótulo
+# nominal; 'N/A'); FK COMPOSTA para o documento citado; CHECK obriga
+# documento citado para todo valor ≠ 'N/A' e página ≥ 1 quando presente.
+_MIGRACAO_V6: tuple[str, ...] = (
+    """
+    CREATE TABLE lotes_l2 (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        modelo           TEXT NOT NULL,
+        versao_do_modelo TEXT NOT NULL DEFAULT '',
+        prompt_versao    TEXT NOT NULL,
+        prompt_sha256    TEXT NOT NULL,
+        temperatura      REAL NOT NULL,
+        seed             INTEGER,
+        codebook_sha256  TEXT NOT NULL,
+        versao_agente    TEXT NOT NULL,
+        schema_version   INTEGER NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'aberto'
+                         CHECK (status IN ('aberto', 'concluido')),
+        aberto_em        TEXT NOT NULL,
+        concluido_em     TEXT,
+        UNIQUE (modelo, versao_do_modelo, prompt_versao, prompt_sha256,
+                temperatura, seed, codebook_sha256, versao_agente, schema_version)
+    )
+    """,
+    """
+    CREATE TABLE catalogo_l2 (
+        edital_id      TEXT NOT NULL REFERENCES editais(id),
+        campo          TEXT NOT NULL,
+        lote_id        INTEGER NOT NULL REFERENCES lotes_l2(id),
+        valor          TEXT NOT NULL,
+        documento_id   TEXT,
+        url_origem     TEXT,
+        citacao_trecho TEXT,
+        citacao_pagina INTEGER,
+        verificacao    TEXT NOT NULL CHECK (verificacao IN ('ok', 'citacao_invalidada')),
+        gravado_em     TEXT NOT NULL,
+        PRIMARY KEY (edital_id, campo, lote_id),
+        CHECK (documento_id IS NOT NULL OR valor = 'N/A'),
+        CHECK (citacao_pagina IS NULL OR citacao_pagina >= 1),
+        FOREIGN KEY (documento_id, url_origem) REFERENCES documentos(id, url_origem)
+    )
+    """,
+    "CREATE INDEX idx_catalogo_l2_lote ON catalogo_l2(lote_id)",
+    "CREATE INDEX idx_catalogo_l2_documento ON catalogo_l2(documento_id, url_origem)",
+)
+
 MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (1, _MIGRACAO_V1),
     (2, _MIGRACAO_V2),
     (3, _MIGRACAO_V3),
     (4, _MIGRACAO_V4),
     (5, _MIGRACAO_V5),
+    (6, _MIGRACAO_V6),
 )
 
 
@@ -966,6 +1038,189 @@ class Manifesto:
             ORDER BY rowid
             """,
             (url_origem,),
+        )
+
+    # -- análise L2 (CAP-7, migração v6) --------------------------------------
+    # ``analise`` grava SOMENTE aqui (AD-11): lote e catálogo são as únicas
+    # tabelas novas do estágio; editais/documentos seguem intocados.
+
+    def documentos_do_portal_para_analise(self, portal_id: int) -> list[sqlite3.Row]:
+        """Documentos do portal COM a exclusão VIGENTE resolvida por documento.
+
+        Mesma membria de ``documentos_do_portal`` (candidatos tipo 'pdf',
+        DISTINCT anti-fan-out); a coluna extra ``excluido_vigente`` carrega a
+        decisão vigente da fila por URL (1 = excluído). Ordenação
+        ``edital_id, data_captura, rowid`` — precedência cronológica de
+        captura DENTRO do edital (FR-17: captura posterior prevalece na
+        consolidação). Leitura pura: nenhum INSERT/UPDATE.
+        """
+        return self.consultar(
+            f"""
+            SELECT d.*, COALESCE(f.decidido_exclusao, 0) AS excluido_vigente
+            FROM documentos d
+            JOIN (
+                SELECT DISTINCT url FROM candidatos
+                WHERE portal_id = ? AND tipo = 'pdf'
+            ) c ON c.url = d.url_origem
+            LEFT JOIN ({_FILA_VIGENTE}) fv ON fv.url_origem = d.url_origem
+            LEFT JOIN fila_revisao f ON f.id = fv.id_fila_vigente
+            ORDER BY d.edital_id, d.data_captura, d.rowid
+            """,
+            (portal_id,),
+        )
+
+    _COLUNAS_LOTE = (
+        "modelo",
+        "versao_do_modelo",
+        "prompt_versao",
+        "prompt_sha256",
+        "temperatura",
+        "seed",
+        "codebook_sha256",
+        "versao_agente",
+        "schema_version",
+    )
+
+    def obter_ou_abrir_lote(self, assinatura: dict[str, Any]) -> tuple[sqlite3.Row, bool]:
+        """Lote da assinatura EXATA do instrumento; cria só quando não existe.
+
+        A comparação usa ``IS`` coluna a coluna (seed NULL casa com NULL).
+        Preferência por lotes ABERTOS (retomada FR-18); um lote CONCLUÍDO com
+        a mesma assinatura é REUSADO DE FORMA HONESTA: é REABERTO aqui
+        (``status='aberto'``, ``concluido_em=NULL``) e só volta a 'concluido'
+        no próximo ``fechar_lote`` — a delimitação nunca mente sobre
+        conclusão enquanto novas linhas entram. Devolve ``(linha_do_lote,
+        criado_agora)``.
+        """
+        colunas = self._COLUNAS_LOTE
+        ausentes = [c for c in colunas if c not in assinatura]
+        if ausentes:
+            raise ValueError(f"assinatura incompleta: faltam {', '.join(ausentes)}")
+        desconhecidas = [k for k in assinatura if k not in colunas]
+        if desconhecidas:
+            raise ValueError(
+                f"assinatura com chaves desconhecidas: {', '.join(desconhecidas)}"
+            )
+        valores = tuple(assinatura[c] for c in colunas)
+        where = " AND ".join(f"{c} IS ?" for c in colunas)
+        selecao = (
+            f"SELECT * FROM lotes_l2 WHERE {where} "
+            "ORDER BY CASE WHEN status = 'aberto' THEN 0 ELSE 1 END, id DESC LIMIT 1"
+        )
+        with self.transacao() as conn:
+            linha = conn.execute(selecao, valores).fetchone()
+            if linha is None:
+                colunas_sql = ", ".join([*colunas, "aberto_em"])
+                placeholders = ", ".join("?" for _ in range(len(colunas) + 1))
+                conn.execute(
+                    f"INSERT INTO lotes_l2 ({colunas_sql}) VALUES ({placeholders})",
+                    (*valores, agora_iso_utc()),
+                )
+                criado = conn.execute(selecao, valores).fetchone()
+                assert criado is not None  # acabou de ser inserido nesta transação
+                return criado, True
+            if str(linha["status"]) == "concluido":
+                conn.execute(
+                    """
+                    UPDATE lotes_l2 SET status = 'aberto', concluido_em = NULL
+                    WHERE id = ?
+                    """,
+                    (int(linha["id"]),),
+                )
+                linha = conn.execute(selecao, valores).fetchone()
+                assert linha is not None  # mesma transação, mesma linha
+            return linha, False
+
+    def registrar_campos_l2(
+        self, lote_id: int, edital_id: str, campos: list[dict[str, Any]]
+    ) -> int:
+        """Grava TODOS os campos do edital numa ÚNICA transação (AD-3).
+
+        ``campos``: dicts com campo, valor (TEXT), documento_id, url_origem,
+        citacao_trecho, citacao_pagina e verificacao (∈ ok|citacao_invalidada
+        — CHECK do banco é a última defesa). INSERT OR REPLACE pela PK
+        (edital_id, campo, lote_id): reprocessar o edital no MESMO lote
+        substitui as próprias linhas, nunca duplica. Devolve quantas linhas
+        foram gravadas.
+        """
+        for registro in campos:
+            verificacao = registro.get("verificacao")
+            if verificacao not in ("ok", "citacao_invalidada"):
+                raise ValueError(
+                    f"verificacao inválida para {registro.get('campo')!r}: "
+                    f"{verificacao!r} (esperado ok|citacao_invalidada)"
+                )
+            for obrigatoria in ("campo", "valor"):
+                if not registro.get(obrigatoria):
+                    raise ValueError(
+                        f"campo '{obrigatoria}' é obrigatório em cada registro"
+                    )
+        with self.transacao() as conn:
+            for registro in campos:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO catalogo_l2 (
+                        edital_id, campo, lote_id, valor, documento_id,
+                        url_origem, citacao_trecho, citacao_pagina,
+                        verificacao, gravado_em
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        edital_id,
+                        str(registro["campo"]),
+                        lote_id,
+                        str(registro["valor"]),
+                        registro.get("documento_id"),
+                        registro.get("url_origem"),
+                        registro.get("citacao_trecho"),
+                        registro.get("citacao_pagina"),
+                        registro["verificacao"],
+                        agora_iso_utc(),
+                    ),
+                )
+            return len(campos)
+
+    def fechar_lote(self, lote_id: int) -> bool:
+        """Marca o lote como concluído; False se já estava (nunca reabre)."""
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE lotes_l2
+                SET status = 'concluido', concluido_em = ?
+                WHERE id = ? AND status = 'aberto'
+                """,
+                (agora_iso_utc(), lote_id),
+            )
+            return cursor.rowcount > 0
+
+    def editais_codificados_no_lote(self, lote_id: int) -> set[str]:
+        """Editais que já têm catálogo gravado NESTE lote (pulo da retomada)."""
+        return {
+            str(linha["edital_id"])
+            for linha in self.consultar(
+                "SELECT DISTINCT edital_id FROM catalogo_l2 WHERE lote_id = ?",
+                (lote_id,),
+            )
+        }
+
+    def contar_catalogo_l2(self, lote_id: int | None = None) -> int:
+        """Campos VÁLIDOS do catálogo L2 (verificacao='ok'), total ou de UM lote.
+
+        Métrica do ``status``: linhas com ``citacao_invalidada`` ficam FORA da
+        contagem — custódia preservada na tabela, mas fora do catálogo válido.
+        """
+        if lote_id is None:
+            return int(
+                self.consultar(
+                    "SELECT COUNT(*) FROM catalogo_l2 WHERE verificacao = 'ok'"
+                )[0][0]
+            )
+        return int(
+            self.consultar(
+                "SELECT COUNT(*) FROM catalogo_l2 "
+                "WHERE lote_id = ? AND verificacao = 'ok'",
+                (lote_id,),
+            )[0][0]
         )
 
     # -- consulta (CAP-9/UJ-3/§10): leituras ONLY (AD-3/AD-4: fonte única) ----

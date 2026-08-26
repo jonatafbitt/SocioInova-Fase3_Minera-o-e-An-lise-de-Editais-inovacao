@@ -1,0 +1,131 @@
+# =============================================================================
+# CODEBOOK — Catálogo Analítico L2 (CAP-7)
+# =============================================================================
+# ⚠️  ATENÇÃO — EXEMPLO MÍNIMO: o conteúdo de `dimensoes:` abaixo é ESQUEMA +
+#     EXEMPLO ILUSTRATIVO rotulado EXEMPLO. O CONTEÚDO CIENTÍFICO do codebook
+#     (dimensões/campos derivados do Quadro Conceitual-Analítico) é
+#     responsabilidade DO(A) PESQUISADOR(A): substitua o exemplo pelo Quadro
+#     real ANTES de congelar.
+#
+# Os TRÊS PHASE-GATES do L2 moram neste arquivo porque o congelamento É uma
+# propriedade dele (o hash SHA-256 deste arquivo registra-se em cada lote em
+# `lotes_l2.codebook_sha256`; mudou o arquivo ⇒ novo instrumento ⇒ novo lote).
+# O comando `analise` RECUSA rodar (exit 2) enquanto qualquer um dos blocos
+# abaixo não estiver preenchido:
+#   1. congelamento            — quem/when: pesquisador(a), ao congelar;
+#   2. trietica_dahlin         — OQ-6: decidida com o(á) orientador(a);
+#   3. acordo_humano_maquina   — OQ-5: limiar fixado A PRIORI por escrito.
+#
+# Passo a passo do congelamento (README §Fase L2):
+#   i.   substitua o exemplo pelas dimensões/campos reais do Quadro;
+#   ii.  valide com `uv run agente-editais analise --portal TST` (recusa
+#        nomeando os gates pendentes — nada roda sem congelamento);
+#   iii. preencha os três blocos marcados "PREENCHER" abaixo;
+#   iv.  COMMIT no git (AD-9: config versionada; alterar exige commit).
+# =============================================================================
+
+schema_version: 1
+
+# Regra de precedência intra-edital declarada (FR-17) — implementada em
+# código como cronologia de captura (captura posterior prevalece na
+# consolidação). Mudar para classificação por TIPO documental é decisão
+# humana registrada (Ask First da story).
+precedencia_intra_edital: >-
+  Cronologia de captura: os textos dos documentos do edital entram em ordem
+  de data_captura crescente e a captura POSTERIOR prevalece na consolidação.
+
+# -----------------------------------------------------------------------------
+# DIMENSÕES E CAMPOS — ESQUEMA + EXEMPLO (substituir pelo Quadro real)
+# -----------------------------------------------------------------------------
+# Cada campo precisa de: id ([a-z0-9_]+), escala (ordinal|nominal),
+# definição operacional, regra de decisão, N/A (permite_na), âncoras
+# positiva/negativa e regra de boilerplate. Ordinal usa 'valores'
+# (ex.: grau 0–2); nominal usa 'opcoes'.
+dimensoes:
+  - id: dimensao_exemplo_governanca
+    nome: "EXEMPLO — Governança da inovação (substituir pelo Quadro)"
+    definicao_operacional: >-
+      EXEMPLO. Mecanismos de governança presentes no texto do edital,
+      codificáveis apenas quando explicitados no documento.
+    campos:
+      # ---- campo ORDINAL (grau 0–2 + N/A) ---------------------------------
+      - id: exemplo_grau_participacao_social
+        nome: "EXEMPLO — Grau de participação social prevista"
+        escala: ordinal
+        valores: [0, 1, 2]
+        permite_na: true
+        definicao_operacional: >-
+          EXEMPLO. 0 = ausência de participação social prevista; 1 = menção
+          a atores externos sem mecanismo; 2 = mecanismo formal de
+          participação descrito.
+        regra_decisao: >-
+          EXEMPLO. Codifique o GRAU MÁXIMO encontrado em qualquer documento
+          do edital; em dúvida entre dois graus, escolha o menor.
+        ancoras_positivas:
+          - "EXEMPLO — 'comitê com representantes da comunidade'"
+          - "EXEMPLO — 'audiência pública para seleção das propostas'"
+        ancoras_negativas:
+          - "EXEMPLO — 'as decisões cabem exclusivamente ao colegiado interno'"
+        regra_boilerplate: >-
+          EXEMPLO. Cláusulas padrão replicadas entre editais (disposições
+          finais, modelos de anexo) NÃO contam como evidência se citadas
+          sozinhas; procure formulação específica do programa.
+
+      # ---- campo NOMINAL (categorias + N/A) --------------------------------
+      - id: exemplo_concepcao_inovacao
+        nome: "EXEMPLO — Concepção dominante de inovação"
+        escala: nominal
+        opcoes:
+          - linear_tecnologica
+          - interativa_social
+          - hibrida
+        permite_na: true
+        definicao_operacional: >-
+          EXEMPLO. Categoria que melhor descreve a concepção de inovação
+          mobilizada pelo edital, segundo as âncoras.
+        regra_decisao: >-
+          EXEMPLO. Escolha UMA categoria; use a âncora mais próxima do
+          trecho-evidência; 'N/A' apenas se nenhum trecho tratar de inovação.
+        ancoras_positivas:
+          - "EXEMPLO — 'pesquisa básica → desenvolvimento tecnológico → mercado' (linear_tecnologica)"
+          - "EXEMPLO — 'coprodução do conhecimento com arranjos sociais locais' (interativa_social)"
+        ancoras_negativas:
+          - "EXEMPLO — texto exclusivamente administrativo/orçamentário"
+        regra_boilerplate: >-
+          EXEMPLO. Definições legais copiadas da Lei de Inovação não decidem
+          sozinhas a categoria; exige-se formulação própria do edital.
+
+# =============================================================================
+# PHASE-GATE 1 — CONGELAMENTO (PREENCHER AO CONGELAR)
+# Quem: o(a) pesquisador(a) responsável. Quando: após finalizar o conteúdo
+# científico acima e ANTES do primeiro lote L2. Congelado = este arquivo não
+# muda mais sem novo commit e nova assinatura de lote.
+# =============================================================================
+congelamento:
+  congelado_em:      # PREENCHER: data ISO 8601 com timezone (ex.: 2026-09-01T10:00:00-03:00)
+  congelado_por:     # PREENCHER: autoria (ex.: "Jonatã França Bittencourt")
+
+# =============================================================================
+# PHASE-GATE 2 — TRÍADE DE DAHLIN (OQ-6)
+# Decidir com o(à) orientador(a): a Tríade entra no codebook ou sua exclusão
+# é justificada na tese? Registre true SOMENTE após decisão por escrito.
+# Regras do carregador: resolvida=true EXIGE decisao ∈ {incorporada,
+# excluida_justificada}; exclusão exige justificativa não vazia; enquanto
+# resolvida=false, a justificativa deve registrar onde/por que a decisão
+# segue pendente.
+# =============================================================================
+trietica_dahlin:
+  resolvida: false   # PREENCHER: true após a decisão (gate exige true)
+  decisao:           # PREENCHER ao resolver: incorporada | excluida_justificada
+  justificativa: >-  # OBRIGATÓRIA já no estado pendente (onde/por que está aberta)
+    Pendente: aguardando decisão registrada com o(a) orientador(a) antes do
+    congelamento (OQ-6).
+
+# =============================================================================
+# PHASE-GATE 3 — ACORDO HUMANO-MÁQUINA (OQ-5)
+# Limiar de concordância fixado A PRIORI, POR ESCRITO, com o(à) orientador(a).
+# Assumido no projeto: κ ≥ 0,75 (SPEC §Assumptions). Valor com 0 < κ ≤ 1.
+# =============================================================================
+acordo_humano_maquina:
+  limiar_kappa:      # PREENCHER: número com 0 < κ ≤ 1 (ex.: 0.75)
+  nota:              # opcional: contexto do combinado (data, reunião, e-mail)
