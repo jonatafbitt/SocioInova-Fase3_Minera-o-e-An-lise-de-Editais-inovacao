@@ -9,8 +9,9 @@ Governado por:
   metadados do PDF chegam SOMENTE por ``texto.ler_metadados``.
 - FR-6 sem short-circuit: TODAS as fontes disponíveis são consultadas e cada
   uma rende linha em ``evidencias_datacao`` (fonte, valor bruto, localização)
-  — url, âncora (capturada na descoberta, v5) e docinfo. A ordem da cascata
-  é url → ancora → pdf_meta; divergência vira sinal de qualidade no evento.
+  — url, âncora (capturada na descoberta, v5), docinfo e time_tag (re-busca
+  HTTP da página de origem). A ordem da cascata é url → ancora → pdf_meta →
+  time_tag; divergência vira sinal de qualidade no evento.
 - Regras de aceite (janela 2019–2026): um único ano candidato é aceito se
   corroborado por ≥2 fontes OU produzido por fonte ≠ url; só-URL sem
   corroboração vai à fila (``baixa_confianca_sourl`` — regra que cobre
@@ -29,8 +30,6 @@ Governado por:
   EXCEÇÃO à cobertura: documento cujo PDF está sumido/corrompido fica SEM
   destino nesta passada (erro de leitura) até o reparo dos bytes — a
   retomada re-tenta automaticamente na próxima execução.
-- Fontes <time>/CSS e backfill wayback são stories futuras — a estrutura de
-  evidências já as comporta sem migração.
 
 Alias (``referencia_para``) é datado como linha própria: mesma mídia no
 disco, evidências próprias pela sua url_origem. Corpus antigo sem
@@ -52,7 +51,7 @@ from .manifest import Manifesto
 from .mapa import Portal
 from .texto import ler_metadados
 
-FONTE_ORDEM: tuple[str, ...] = ("url", "ancora", "pdf_meta")
+FONTE_ORDEM: tuple[str, ...] = ("url", "ancora", "pdf_meta", "time_tag")
 MOTIVO_SEM_DATA = "sem_data"
 MOTIVO_SO_URL = "baixa_confianca_sourl"
 MOTIVO_DIVERGENCIA = "divergencia"
@@ -63,6 +62,7 @@ _RE_ANO_LIVRE = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 _LOCAL_URL = "documentos.url_origem"
 _LOCAL_ANCORA = "candidatos.texto_ancora"
 _LOCAL_DOCINFO = "docinfo"
+_LOCAL_TIME_TAG = "pagina_origem"
 
 
 def _anos_in_janela(texto: str) -> set[int]:
@@ -119,6 +119,85 @@ def _quatro_digitos_de_data(bruto: str) -> str | None:
         texto = texto[2:].strip()
     quatro = texto[:4]
     return quatro if len(quatro) == 4 and quatro.isdigit() else None
+
+
+def _extrair_time_tag_da_pagina(html: str) -> tuple[set[int], str]:
+    """Extrai anos de tags <time> e classes CSS de data de uma página HTML.
+
+    Procura por:
+    1. Tags <time> com atributo datetime (formato ISO 8601)
+    2. Tags <time> com texto contendo ano
+    3. Elementos com classes CSS comuns de data (date, published, etc.)
+
+    Retorna (anos_dentro_janela, valor_bruto_para_evidencia).
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "lxml")
+    anos: set[int] = set()
+    evidencias: list[str] = []
+
+    # 1. Tags <time> com atributo datetime
+    for tag in soup.find_all("time"):
+        datetime_attr = tag.get("datetime", "")
+        if datetime_attr:
+            # Extrair ano do datetime (ISO 8601: 2024-01-15 ou 2024-01-15T10:30:00)
+            match = re.match(r"(\d{4})", str(datetime_attr))
+            if match:
+                ano = int(match.group(1))
+                if ano in _ANOS_JANELA:
+                    anos.add(ano)
+                evidencias.append(f"time[datetime={datetime_attr}]")
+
+        # 2. Texto da tag <time>
+        texto_time = tag.get_text(strip=True)
+        if texto_time:
+            anos_no_texto = _anos_in_janela(texto_time)
+            if anos_no_texto:
+                anos |= anos_no_texto
+                evidencias.append(f"time[text={texto_time}]")
+
+    # 3. Classes CSS comuns de data
+    classes_data = [
+        "date", "published", "entry-date", "post-date", "article-date",
+        "created", "modified", "updated", "datetime", "data-publicacao",
+    ]
+    for classe in classes_data:
+        for elemento in soup.find_all(class_=re.compile(classe, re.I)):
+            texto_elem = elemento.get_text(strip=True)
+            if texto_elem:
+                anos_elem = _anos_in_janela(texto_elem)
+                if anos_elem:
+                    anos |= anos_elem
+                    evidencias.append(f"css(.{classe}={texto_elem[:50]})")
+
+    valor_bruto = "; ".join(evidencias) if evidencias else ""
+    return anos, valor_bruto
+
+
+def _buscar_pagina_origem(url: str) -> str | None:
+    """Busca a página de origem (não o PDF) para extrair metadados HTML.
+
+    Tenta buscar a URL como página HTML. Se o conteúdo for PDF ou
+    inacessível, retorna None.
+    """
+    try:
+        import requests
+        from requests.exceptions import RequestException
+
+        headers = {
+            "User-Agent": "agente-editais/0.1 (pesquisa academica PPGCS/UFBA)"
+        }
+        response = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "")
+        if "pdf" in content_type.lower():
+            return None
+
+        return response.text
+    except (RequestException, Exception):
+        return None
 
 
 def _avaliar(anos_por_fonte: dict[str, set[int]]) -> tuple[int | None, str | None, str | None]:
@@ -274,6 +353,19 @@ def datar_documento(
         anos_pdf |= _anos_in_janela(titulo)
         fora_da_janela |= _anos_fora_da_janela(titulo)
     anos_por_fonte["pdf_meta"] = anos_pdf
+
+    # -- fonte <time>/CSS: re-busca HTTP da página de origem (híbrido) -------
+    # Só busca se ainda não temos consenso (≥2 fontes com mesmo ano)
+    # para evitar requisições desnecessárias.
+    tem_consenso = len({ano for anos in anos_por_fonte.values() for ano in anos}) == 1 and sum(1 for anos in anos_por_fonte.values() if anos) >= 2
+    if not tem_consenso:
+        html_pagina = _buscar_pagina_origem(url)
+        if html_pagina is not None:
+            anos_time, valor_time = _extrair_time_tag_da_pagina(html_pagina)
+            if anos_time:
+                evidencias.append(("time_tag", valor_time, _LOCAL_TIME_TAG))
+                anos_por_fonte["time_tag"] = anos_time
+                fora_da_janela |= _anos_fora_da_janela(valor_time)
 
     # -- decisão + gravação ---------------------------------------------------
     ano, metodo, motivo = _avaliar(anos_por_fonte)

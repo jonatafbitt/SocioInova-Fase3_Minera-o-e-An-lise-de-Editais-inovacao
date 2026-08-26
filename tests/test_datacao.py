@@ -96,14 +96,15 @@ def test_ano_da_url_restrito_ao_caminho():
 
 
 def test_avaliar_so_ancora_e_fonte_desconhecida():
-    """Só-âncora é aceito com metodo ancora; fonte futura fora da cascata
-    (ex.: time_tag) não explode — cai em baixa confiança (guarda defensiva)."""
+    """Só-âncora é aceito com metodo ancora; time_tag é fonte válida na cascata."""
     assert _avaliar({"url": set(), "ancora": {2023}, "pdf_meta": set()}) == (
         2023,
         "ancora",
         None,
     )
-    assert _avaliar({"time_tag": {2024}}) == (None, None, "baixa_confianca_sourl")
+    # time_tag agora é fonte válida em FONTE_ORDEM — só time_tag é aceito
+    assert _avaliar({"time_tag": {2024}}) == (2024, "time_tag", None)
+    # pdf_meta tem precedência sobre time_tag na cascata
     assert _avaliar({"pdf_meta": {2024}, "time_tag": {2024}}) == (2024, "pdf_meta", None)
 
 
