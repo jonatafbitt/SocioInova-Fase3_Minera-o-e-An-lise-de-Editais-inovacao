@@ -18,8 +18,6 @@ from agente_editais.consulta import app
 from agente_editais.fetcher import carregar_polidez
 from agente_editais.manifest import Manifesto
 from agente_editais.texto import (
-    _texto_da_pagina,
-    caminho_txt_do,
     extrair_documento,
     ja_extraido,
 )
@@ -38,7 +36,6 @@ from .conftest import (
     tipos_eventos,
     url_do,
 )
-
 
 # -- infraestrutura local (builders compartilhados vivem no conftest) ----------------
 
@@ -91,9 +88,7 @@ def test_tres_nativos_geram_txt_irmaos_flags_false_e_eventos(
             "/editais/b.pdf": pdf_com_texto(
                 [longo("Conteudo nativo da pagina"), longo("Segunda pagina com texto")]
             ),
-            "/docs/c.pdf": pdf_com_texto([
-                longo("Terceiro edital com texto suficiente")
-            ]),
+            "/docs/c.pdf": pdf_com_texto([longo("Terceiro edital com texto suficiente")]),
         },
     )
 
@@ -176,10 +171,6 @@ def test_pdf_apenas_imagem_recebe_flag_escaneado_e_evento(
     assert "escaneados: 1" in saida_cli(resultado)
     assert "extraídos: 1" in saida_cli(resultado)
 
-    por_nome = {
-        Path(doc["caminho"]).name.rsplit("-", 1)[-1]: doc
-        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
-    }
     escaneado = next(
         doc
         for doc in documentos_do_manifesto(politeness_veloz.manifesto)
@@ -194,9 +185,9 @@ def test_pdf_apenas_imagem_recebe_flag_escaneado_e_evento(
     assert escaneado["texto_chars"] < escaneado["texto_paginas"] * 100, (
         "abaixo do limiar default (100 × nº páginas)"
     )
-    assert (
-        Path(escaneado["texto_caminho"]).read_text(encoding="utf-8").strip() == ""
-    ), ".txt vazio/quase-vazio para o escaneado"
+    assert Path(escaneado["texto_caminho"]).read_text(encoding="utf-8").strip() == "", (
+        ".txt vazio/quase-vazio para o escaneado"
+    )
     assert nativo["flag_escaneado"] == 0
 
     escaneados = [
@@ -214,9 +205,7 @@ def test_pdf_apenas_imagem_recebe_flag_escaneado_e_evento(
 # -- Cenário "PDF corrompido/truncado": erro isolado, lote segue, exit 0 ------------
 
 
-def test_bytes_corrompidos_isolam_erro_e_lote_segue(
-    cli, politeness_veloz, servidor_fake, corpus
-):
+def test_bytes_corrompidos_isolam_erro_e_lote_segue(cli, politeness_veloz, servidor_fake, corpus):
     coletar_pdfs(
         cli,
         politeness_veloz,
@@ -271,9 +260,7 @@ def test_bytes_corrompidos_isolam_erro_e_lote_segue(
 # -- Cenário "Corpus ausente no disco": arquivo_ausente, erro marcado, exit 0 -------
 
 
-def test_arquivo_ausente_marca_erro_e_lote_segue(
-    cli, politeness_veloz, servidor_fake, corpus
-):
+def test_arquivo_ausente_marca_erro_e_lote_segue(cli, politeness_veloz, servidor_fake, corpus):
     coletar_pdfs(
         cli,
         politeness_veloz,
@@ -309,9 +296,7 @@ def test_arquivo_ausente_marca_erro_e_lote_segue(
 # -- Cenário "Re-execução idempotente": zero retrabalho, pulados no resumo ----------
 
 
-def test_reexecucao_idempotente_zero_reextracoes(
-    cli, politeness_veloz, servidor_fake, corpus
-):
+def test_reexecucao_idempotente_zero_reextracoes(cli, politeness_veloz, servidor_fake, corpus):
     coletar_pdfs(
         cli,
         politeness_veloz,
@@ -324,9 +309,7 @@ def test_reexecucao_idempotente_zero_reextracoes(
     )
     primeira = cli.invoke(app, ["textuar", "--portal", "TST"])
     assert primeira.exit_code == 0, primeira.output
-    tipos_primeira = [
-        tipo for tipo, _ in tipos_eventos(politeness_veloz.manifesto)
-    ]
+    tipos_primeira = [tipo for tipo, _ in tipos_eventos(politeness_veloz.manifesto)]
     assert tipos_primeira.count("texto_extraido") == 2
     assert tipos_primeira.count("texto_escaneado") == 1
 
@@ -335,9 +318,7 @@ def test_reexecucao_idempotente_zero_reextracoes(
     assert segunda.exit_code == 0, segunda.output
     assert "pulados: 3" in saida_cli(segunda), "resumo mostra os pulados"
     assert "extraídos: 0" in saida_cli(segunda) and "escaneados: 0" in saida_cli(segunda)
-    tipos_segunda = [
-        tipo for tipo, _ in tipos_eventos(politeness_veloz.manifesto)
-    ]
+    tipos_segunda = [tipo for tipo, _ in tipos_eventos(politeness_veloz.manifesto)]
     assert tipos_segunda.count("texto_extraido") == 2, "nenhum re-parse na retomada"
     assert tipos_segunda.count("texto_escaneado") == 1
 
@@ -377,9 +358,7 @@ def test_documento_novo_pos_extracao_processa_apenas_ele(
     assert len(novos) == 1
 
 
-def test_nova_versao_do_documento_ganha_txt_proprio(
-    cli, politeness_veloz, servidor_fake, corpus
-):
+def test_nova_versao_do_documento_ganha_txt_proprio(cli, politeness_veloz, servidor_fake, corpus):
     """Bytes alterados ⇒ nova versão ⇒ re-extração do NOVO caminho (novo txt)."""
     coletar_pdfs(
         cli,
@@ -567,8 +546,11 @@ def test_txt_irmao_e_utf8(tmp_path):
     ("tamanhos", "desfecho_esperado"),
     [
         ([100, 100], "extraido"),  # 200 == 100×2: IGUAL ao limiar NÃO é escaneado (<)
-        ([99, 100], "escaneado"),  # 199 extraídos < 200 — o join somaria 200: conta SEM separadores
-        ([99, 99], "escaneado"),   # 198 < 200
+        (
+            [99, 100],
+            "escaneado",
+        ),  # 199 extraídos < 200 — o join somaria 200: conta SEM separadores
+        ([99, 99], "escaneado"),  # 198 < 200
     ],
 )
 def test_fronteira_da_flag_conta_sem_separadores(
@@ -667,9 +649,7 @@ def test_falha_de_persistencia_vira_erro_e_lote_segue(tmp_path, monkeypatch):
         ]
         assert [d.desfecho for d in desfechos] == ["erro", "erro"], "lote segue após falha"
         erros = [
-            detalhe
-            for tipo, detalhe in tipos_eventos(manifesto.caminho)
-            if tipo == "texto_erro"
+            detalhe for tipo, detalhe in tipos_eventos(manifesto.caminho) if tipo == "texto_erro"
         ]
         assert len(erros) == 2
         assert all(erro["fase"] == "persistencia" for erro in erros)
@@ -750,9 +730,7 @@ def test_sigla_minuscula_case_insensitive(cli, politeness_veloz, servidor_fake) 
     assert "[TST] Portal TST" in resultado.output
 
 
-def test_limiar_custom_do_toml_decide_flags_via_cli(
-    cli, politeness_veloz, servidor_fake, corpus
-):
+def test_limiar_custom_do_toml_decide_flags_via_cli(cli, politeness_veloz, servidor_fake, corpus):
     """Wiring TOML→flag ponta a ponta: com limiar 250, um nativo de ~120
     chars/página vira ESCANEADO (hardcode de 100 no chamador daria extraído)."""
     coletar_pdfs(

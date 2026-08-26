@@ -23,6 +23,10 @@ agente-editais = "agente_editais.consulta:main"
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
+    "pytest-cov==6.2.1",
+    "ruff==0.12.7",
+    "mypy==1.18.2",
+    "types-PyYAML>=6.0.2",
 ]
 
 [build-system]
@@ -41,3 +45,87 @@ python-preference = "only-managed"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 99
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line too long (formatter handles it)
+    "N802",   # function name should be lowercase (SQLite conventions)
+    "N803",   # argument name should be lowercase
+    "N806",   # variable in function should be lowercase
+    "N818",   # exception name should end with Error (nomes em português)
+    "UP007",  # use X | Y for union types (compat com runtime)
+    "UP038",  # use X | Y in isinstance (confere com UP007)
+    "RUF001", # ambiguous EN DASH (português usa – )
+    "RUF002", # ambiguous EN DASH in docstrings
+    "RUF003", # ambiguous MULTIPLICATION SIGN (× usado propositalmente)
+    "RUF012", # mutable class attributes (pydantic models)
+    "B008",   # function call in default (padrão typer)
+    "B905",   # zip without strict= (não necessário aqui)
+    "SIM105", # use contextlib.suppress (muito agressivo)
+    "SIM117", # combine with statements (muito agressivo)
+    "UP017",  # use datetime.UTC alias (timezone.utc é claro)
+    "UP035",  # import from collections.abc (compat com typing)
+    "UP037",  # remove quotes from annotation (forward references)
+    "E741",   # ambiguous variable name (uso legítimo em generators)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agente_editais"]
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "playwright.*",
+    "pandas.*",
+    "lxml.*",
+    "bs4.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "agente_editais.manifest",
+    "agente_editais.consulta",
+    "agente_editais.datacao",
+    "agente_editais.descoberta",
+    "agente_editais.llm_adapter",
+    "agente_editais.texto",
+    "agente_editais.coleta",
+]
+disable_error_code = ["arg-type", "union-attr", "no-any-return", "var-annotated"]
+
+[tool.coverage.run]
+source = ["src/agente_editais"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 30
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__",
+]

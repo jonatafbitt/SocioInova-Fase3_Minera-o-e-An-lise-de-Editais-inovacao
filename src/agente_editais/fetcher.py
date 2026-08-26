@@ -43,7 +43,8 @@ import tomllib
 import urllib.robotparser
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, time as hora_toml
+from datetime import datetime
+from datetime import time as hora_toml
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -601,7 +602,7 @@ def _tentar_playwright(
             )
         finally:
             _marcar_pedido(balde)  # o servidor recebeu (ou tentamos) — conta pedido
-    except Exception as exc:  # noqa: BLE001 — falha do browser é erro de EVENTO, não crash
+    except Exception as exc:
         return ResultadoPagina(
             url=destino,
             url_final=url_final_base or destino,
@@ -842,8 +843,12 @@ def obter_html(
 
     if portal.dinamico:
         return _tentar_playwright(
-            destino, polidez, "portal_dinamico", inicio,
-            url_final_base=destino, sessao=sessao,
+            destino,
+            polidez,
+            "portal_dinamico",
+            inicio,
+            url_final_base=destino,
+            sessao=sessao,
         )
 
     propria = sessao is None
@@ -979,9 +984,7 @@ def baixar_stream(
             balde = hostname_de(url_atual)
             try:
                 _aguardar_delay(balde, _delay_efetivo(polidez, decisao_hop))
-                resposta = sessao.get(
-                    url_atual, timeout=tempo, allow_redirects=False, stream=True
-                )
+                resposta = sessao.get(url_atual, timeout=tempo, allow_redirects=False, stream=True)
                 _marcar_pedido(balde)
             except requests.RequestException as exc:
                 return _falha(url_atual, erro=f"{type(exc).__name__}: {exc}")
@@ -990,18 +993,14 @@ def baixar_stream(
                 # contador avança em TODO hop terminal — inclusive 403 no meio
                 # de uma cadeia que até aqui só redirecionou; 3xx é neutro
                 # (não incrementa nem zera o streak do host)
-                consecutivos = _registrar_status_download(
-                    balde, resposta.status_code
-                )
+                consecutivos = _registrar_status_download(balde, resposta.status_code)
                 break
 
             location = resposta.headers.get("Location")
             resposta.close()
             resposta = None
             if not location:
-                return _falha(
-                    url_atual, erro=f"redirect de {url_atual} sem cabeçalho Location"
-                )
+                return _falha(url_atual, erro=f"redirect de {url_atual} sem cabeçalho Location")
             try:
                 url_atual = normalizar_url(urljoin(url_atual, location))
             except ValueError as exc:
@@ -1041,9 +1040,7 @@ def baixar_stream(
         try:
             iterador = resposta.iter_content(chunk_size=_CHUNK_DOWNLOAD)
             primeiro = next(iterador, b"")
-            if primeiro and not (
-                primeiro.startswith(_MAGICO_PDF) or "pdf" in tipo_conteudo
-            ):
+            if primeiro and not (primeiro.startswith(_MAGICO_PDF) or "pdf" in tipo_conteudo):
                 resposta.close()
                 return _falha(
                     url_atual,
@@ -1051,10 +1048,7 @@ def baixar_stream(
                     bytes_baixados=len(primeiro),
                     conteudo_inesperado=True,
                     content_type=tipo_conteudo or None,
-                    erro=(
-                        "conteudo inicial nao-PDF "
-                        f"({tipo_conteudo or 'sem content-type'})"
-                    ),
+                    erro=(f"conteudo inicial nao-PDF ({tipo_conteudo or 'sem content-type'})"),
                 )
 
             with caminho_tmp.open("wb") as saida:
@@ -1117,7 +1111,9 @@ def baixar_stream(
             sessao.close()
 
 
-def probe_seed(url: str, polidez: Polidez, sessao: requests.Session | None = None) -> ResultadoSeed:
+def probe_seed(
+    url: str, polidez: Polidez, sessao: requests.Session | None = None
+) -> ResultadoSeed:
     """Verifica alcançabilidade de uma seed: HEAD, caindo para GET em 405/501.
 
     ``sessao`` permite reaproveitar TCP/TLS ao longo de um lote (pré-voo);
@@ -1203,10 +1199,10 @@ def executar_pre_voo(
                 resultado = probe_seed(seed, polidez, sessao=sessao)
             except ViolacaoPolidez:
                 raise
-            except Exception as exc:  # noqa: BLE001 — seed ruim não derruba o lote
+            except Exception as exc:
                 try:
                     destino = normalizar_url(seed)
-                except Exception:  # noqa: BLE001 — nem normalizar dá
+                except Exception:
                     destino = seed.strip()
                 resultado = ResultadoSeed(
                     url=destino,

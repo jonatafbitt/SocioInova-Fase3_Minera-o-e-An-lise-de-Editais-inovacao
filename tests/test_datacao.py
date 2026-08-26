@@ -40,7 +40,6 @@ from .conftest import (
     url_do,
 )
 
-
 # -- Infraestrutura local (builders compartilhados vivem no conftest) ----------------
 
 
@@ -52,10 +51,7 @@ def _documents_unica(caminho_manifesto) -> dict:
 
 def _evidencias(caminho_manifesto, url: str) -> dict[str, str]:
     with Manifesto(caminho_manifesto) as manifesto:
-        return {
-            linha["fonte"]: linha["valor_bruto"]
-            for linha in manifesto.evidencias_da_url(url)
-        }
+        return {linha["fonte"]: linha["valor_bruto"] for linha in manifesto.evidencias_da_url(url)}
 
 
 # -- Unidades: extração de ano e matriz de decisão -----------------------------------
@@ -135,9 +131,7 @@ def test_avaliar_matriz_de_decisao(anos_por_fonte, esperado):
 
 def test_ler_metadados_tolerante(tmp_path):
     valido = tmp_path / "bom.pdf"
-    valido.write_bytes(
-        pdf_com_docinfo([longo("Doc com docinfo")], criado_em="D:20230101000000Z")
-    )
+    valido.write_bytes(pdf_com_docinfo([longo("Doc com docinfo")], criado_em="D:20230101000000Z"))
     meta = ler_metadados(valido)
     assert meta is not None and meta["criado_em"].startswith("D:2023")
 
@@ -232,9 +226,7 @@ def test_wiring_ancora_descoberta_persiste_integral_e_evento_trunca(
     assert detalhe["ancora"] == ancora_longa[:200], "evento trunca em 200"
 
 
-def test_wiring_sem_descoberta_candidato_fica_sem_ancora(
-    cli, politeness_veloz, servidor_fake
-):
+def test_wiring_sem_descoberta_candidato_fica_sem_ancora(cli, politeness_veloz, servidor_fake):
     """Registro direto (sem descoberta) ⇒ âncora NULL = fonte indisponível."""
     coletar_pdfs(
         cli,
@@ -254,9 +246,7 @@ def test_wiring_sem_descoberta_candidato_fica_sem_ancora(
 # -- Cenário "Só-URL sem corroboração": fila baixa confiança -------------------------
 
 
-def test_so_url_sem_corroboracao_vai_a_fila_baixa_confianca(
-    cli, politeness_veloz, servidor_fake
-):
+def test_so_url_sem_corroboracao_vai_a_fila_baixa_confianca(cli, politeness_veloz, servidor_fake):
     coletar_pdfs(
         cli,
         politeness_veloz,
@@ -278,7 +268,11 @@ def test_so_url_sem_corroboracao_vai_a_fila_baixa_confianca(
     assert itens[0]["status"] == "pendente"
     assert itens[0]["url_origem"] == documento["url_origem"]
 
-    filas = [detalhe for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto) if tipo == "datacao_fila"]
+    filas = [
+        detalhe
+        for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto)
+        if tipo == "datacao_fila"
+    ]
     assert len(filas) == 1
     assert filas[0]["motivo"] == "baixa_confianca_sourl"
     assert filas[0]["divergencia"] is False
@@ -288,9 +282,7 @@ def test_so_url_sem_corroboracao_vai_a_fila_baixa_confianca(
 # -- Cenário "Divergência": três evidências + sinal de qualidade ----------------------
 
 
-def test_divergencia_vai_a_fila_com_sinal_de_qualidade(
-    cli, politeness_veloz, servidor_fake
-):
+def test_divergencia_vai_a_fila_com_sinal_de_qualidade(cli, politeness_veloz, servidor_fake):
     descobrir_coletar(
         cli,
         politeness_veloz,
@@ -316,7 +308,11 @@ def test_divergencia_vai_a_fila_com_sinal_de_qualidade(
     itens = fila_do_manifesto(politeness_veloz.manifesto)
     assert len(itens) == 1 and itens[0]["motivo"] == "divergencia"
 
-    filas = [detalhe for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto) if tipo == "datacao_fila"]
+    filas = [
+        detalhe
+        for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto)
+        if tipo == "datacao_fila"
+    ]
     assert filas[0]["motivo"] == "divergencia"
     assert filas[0]["divergencia"] is True, "sinal de qualidade no evento"
     assert filas[0]["anos_encontrados"] == [2021, 2023]
@@ -396,7 +392,11 @@ def test_ano_fora_da_janela_no_pdf_meta_vira_evidencia_e_fila(
 
     itens = fila_do_manifesto(politeness_veloz.manifesto)
     assert itens[0]["motivo"] == "sem_data", "caso único fora da janela motiva a fila"
-    filas = [detalhe for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto) if tipo == "datacao_fila"]
+    filas = [
+        detalhe
+        for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto)
+        if tipo == "datacao_fila"
+    ]
     assert filas[0]["anos_fora_da_janela"] == [2018], "sinal de qualidade"
 
 
@@ -432,9 +432,7 @@ def test_sem_data_alguma_enfileira_sem_descartar(cli, politeness_veloz, servidor
 # -- Cenário "Retomada idempotente": pulados no resumo, zero re-decisões --------------
 
 
-def test_reexecucao_idempotente_pula_datados_e_preserva_fila(
-    cli, politeness_veloz, servidor_fake
-):
+def test_reexecucao_idempotente_pula_datados_e_preserva_fila(cli, politeness_veloz, servidor_fake):
     descobrir_coletar(
         cli,
         politeness_veloz,
@@ -472,9 +470,7 @@ def test_reexecucao_idempotente_pula_datados_e_preserva_fila(
     assert len(fila_do_manifesto(politeness_veloz.manifesto)) == 1, "fila permanece intacta"
 
 
-def test_decisao_humana_impede_reprocessamento_na_retomada(
-    cli, politeness_veloz, servidor_fake
-):
+def test_decisao_humana_impede_reprocessamento_na_retomada(cli, politeness_veloz, servidor_fake):
     """Item resolvido na fila também trava o reprocessamento (zero re-decisões)."""
     coletar_pdfs(
         cli,
@@ -488,12 +484,18 @@ def test_decisao_humana_impede_reprocessamento_na_retomada(
     decisao = cli.invoke(
         app,
         [
-            "fila", "decidir",
-            "--id", str(item["id"]),
-            "--ano", "2023",
-            "--justificativa", "Capa do PDF declara publicação em 2023.",
-            "--autor", "Pesquisadora",
-            "--evidencia", "capa página 1",
+            "fila",
+            "decidir",
+            "--id",
+            str(item["id"]),
+            "--ano",
+            "2023",
+            "--justificativa",
+            "Capa do PDF declara publicação em 2023.",
+            "--autor",
+            "Pesquisadora",
+            "--evidencia",
+            "capa página 1",
         ],
     )
     assert decisao.exit_code == 0, decisao.output
@@ -504,7 +506,7 @@ def test_decisao_humana_impede_reprocessamento_na_retomada(
     assert "pulados: 1" in saida_cli(retomada), "decisão humana não é refeta"
     assert len(fila_do_manifesto(politeness_veloz.manifesto)) == 1, "nenhum item duplicado"
     tipos = [tipo for tipo, _ in tipos_eventos(politeness_veloz.manifesto)]
-    assert "datacao_fila" not in tipos[tipos.index("fila_decidida") + 1:], (
+    assert "datacao_fila" not in tipos[tipos.index("fila_decidida") + 1 :], (
         "nenhum novo enfileiramento após a decisão"
     )
 
@@ -549,11 +551,7 @@ def test_pdf_corrompido_ou_sumido_vira_datacao_erro_e_lote_segue(
         assert any(url in linha for linha in perdidas_cli), f"perdida ausente: {url}"
 
     eventos = tipos_eventos(politeness_veloz.manifesto)
-    erros = [
-        detalhe
-        for tipo, detalhe in eventos
-        if tipo == "datacao_erro"
-    ]
+    erros = [detalhe for tipo, detalhe in eventos if tipo == "datacao_erro"]
     assert len(erros) == 2
     assert all(erro["fase"] == "leitura" for erro in erros)
     por_url = {erro["url"]: erro for erro in erros}
@@ -567,9 +565,7 @@ def test_pdf_corrompido_ou_sumido_vira_datacao_erro_e_lote_segue(
     assert sorted(portal_concluida["urls_perdidas"]) == esperadas, (
         "padrão dos irmãos: perdas agregadas no evento do portal"
     )
-    datar_concluido = next(
-        detalhe for tipo, detalhe in eventos if tipo == "datar_concluido"
-    )
+    datar_concluido = next(detalhe for tipo, detalhe in eventos if tipo == "datar_concluido")
     assert sorted(datar_concluido["urls_perdidas"]) == esperadas
 
     (integro,) = [
@@ -645,20 +641,24 @@ def test_fila_listar_mostra_motivo_e_evidencias(cli, politeness_veloz, servidor_
     assert invalido.exit_code == 2
 
 
-def test_fila_decidir_ano_grava_decisao_completa_e_evento(
-    cli, politeness_veloz, servidor_fake
-):
+def test_fila_decidir_ano_grava_decisao_completa_e_evento(cli, politeness_veloz, servidor_fake):
     item = _enfileirar_um(cli, politeness_veloz, servidor_fake)
 
     resultado = cli.invoke(
         app,
         [
-            "fila", "decidir",
-            "--id", str(item["id"]),
-            "--ano", "2023",
-            "--justificativa", "Capa do PDF declara publicação em 2023.",
-            "--autor", "Pesquisadora",
-            "--evidencia", "capa página 1",
+            "fila",
+            "decidir",
+            "--id",
+            str(item["id"]),
+            "--ano",
+            "2023",
+            "--justificativa",
+            "Capa do PDF declara publicação em 2023.",
+            "--autor",
+            "Pesquisadora",
+            "--evidencia",
+            "capa página 1",
         ],
     )
 
@@ -672,15 +672,19 @@ def test_fila_decidir_ano_grava_decisao_completa_e_evento(
     assert decidido["evidencia_anexa"] == "capa página 1"
     assert decidido["decidido_em"]
 
-    eventos = [detalhe for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto) if tipo == "fila_decidida"]
+    eventos = [
+        detalhe
+        for tipo, detalhe in tipos_eventos(politeness_veloz.manifesto)
+        if tipo == "fila_decidida"
+    ]
     assert len(eventos) == 1
     assert eventos[0]["fila_id"] == item["id"]
     assert eventos[0]["decidido_ano"] == 2023
     assert eventos[0]["autor"] == "Pesquisadora"
     assert eventos[0]["motivo_original"] == "sem_data"
-    assert eventos[0]["justificativa"] == (
-        "Capa do PDF declara publicação em 2023."
-    ), "cadeia append-only completa (FR-8/§10)"
+    assert eventos[0]["justificativa"] == ("Capa do PDF declara publicação em 2023."), (
+        "cadeia append-only completa (FR-8/§10)"
+    )
     assert eventos[0]["evidencia_anexa"] == "capa página 1"
 
     listar = cli.invoke(app, ["fila", "listar", "--status", "resolvida"])
@@ -698,11 +702,15 @@ def test_fila_decidir_exclusao_grava_exclusao(cli, politeness_veloz, servidor_fa
     resultado = cli.invoke(
         app,
         [
-            "fila", "decidir",
-            "--id", str(item["id"]),
+            "fila",
+            "decidir",
+            "--id",
+            str(item["id"]),
             "--excluir",
-            "--justificativa", "Documento duplicado de outro edital.",
-            "--autor", "Curadoria",
+            "--justificativa",
+            "Documento duplicado de outro edital.",
+            "--autor",
+            "Curadoria",
         ],
     )
 
@@ -715,16 +723,22 @@ def test_fila_decidir_exclusao_grava_exclusao(cli, politeness_veloz, servidor_fa
     assert "EXCLUSÃO" in listar.output
 
 
-def test_item_resolvido_recusa_segunda_decisao_exit_1(
-    cli, politeness_veloz, servidor_fake
-):
+def test_item_resolvido_recusa_segunda_decisao_exit_1(cli, politeness_veloz, servidor_fake):
     item = _enfileirar_um(cli, politeness_veloz, servidor_fake)
     assert (
         cli.invoke(
             app,
             [
-                "fila", "decidir", "--id", str(item["id"]), "--ano", "2023",
-                "--justificativa", "Primeira decisão.", "--autor", "A",
+                "fila",
+                "decidir",
+                "--id",
+                str(item["id"]),
+                "--ano",
+                "2023",
+                "--justificativa",
+                "Primeira decisão.",
+                "--autor",
+                "A",
             ],
         ).exit_code
         == 0
@@ -733,8 +747,16 @@ def test_item_resolvido_recusa_segunda_decisao_exit_1(
     segunda = cli.invoke(
         app,
         [
-            "fila", "decidir", "--id", str(item["id"]), "--ano", "2024",
-            "--justificativa", "Tentativa de mudar a decisão.", "--autor", "B",
+            "fila",
+            "decidir",
+            "--id",
+            str(item["id"]),
+            "--ano",
+            "2024",
+            "--justificativa",
+            "Tentativa de mudar a decisão.",
+            "--autor",
+            "B",
         ],
     )
 
@@ -745,8 +767,16 @@ def test_item_resolvido_recusa_segunda_decisao_exit_1(
     inexistente = cli.invoke(
         app,
         [
-            "fila", "decidir", "--id", "999", "--ano", "2023",
-            "--justificativa", "Fantasma.", "--autor", "A",
+            "fila",
+            "decidir",
+            "--id",
+            "999",
+            "--ano",
+            "2023",
+            "--justificativa",
+            "Fantasma.",
+            "--autor",
+            "A",
         ],
     )
     assert inexistente.exit_code == 1
@@ -836,9 +866,7 @@ def _manifesto_unitario(tmp_path, *, url: str, corpo: bytes, ancora: str | None 
 
 def test_datar_documento_metodo_ancora_quando_url_nao_produz_ano(tmp_path):
     """Cascata FR-7: url sem ano + âncora/pdf convergentes ⇒ método = ancora."""
-    corpo = pdf_com_docinfo(
-        [longo("Ancora decide")], criado_em="D:20230101000000Z"
-    )
+    corpo = pdf_com_docinfo([longo("Ancora decide")], criado_em="D:20230101000000Z")
     manifesto, documento = _manifesto_unitario(
         tmp_path,
         url="http://x.org/pagina/doc.pdf",
@@ -850,9 +878,7 @@ def test_datar_documento_metodo_ancora_quando_url_nao_produz_ano(tmp_path):
         assert desfecho.desfecho == "aceito"
         assert desfecho.metodo == "ancora", "primeira da cascata que produz o consenso"
         assert desfecho.ano == 2023
-        (linha,) = manifesto.consultar(
-            "SELECT metodo_datacao, ano_aceito FROM documentos"
-        )
+        (linha,) = manifesto.consultar("SELECT metodo_datacao, ano_aceito FROM documentos")
         assert linha["metodo_datacao"] == "ancora" and linha["ano_aceito"] == 2023
     finally:
         manifesto.fechar()
@@ -868,9 +894,7 @@ def test_datar_documento_arquivo_ausente_vira_erro_leitura(tmp_path):
         desfecho = datar_documento(documento, manifesto, portal_id=1)
         assert desfecho.desfecho == "erro"
         erros = [
-            detalhe
-            for tipo, detalhe in tipos_eventos(manifesto.caminho)
-            if tipo == "datacao_erro"
+            detalhe for tipo, detalhe in tipos_eventos(manifesto.caminho) if tipo == "datacao_erro"
         ]
         assert erros[0]["fase"] == "leitura"
         assert erros[0]["existente"] is False
@@ -878,12 +902,8 @@ def test_datar_documento_arquivo_ausente_vira_erro_leitura(tmp_path):
         manifesto.fechar()
 
 
-def test_datar_documento_falha_de_persistencia_vira_erro_e_lote_segue(
-    tmp_path, monkeypatch
-):
-    corpo = pdf_com_docinfo(
-        [longo("Persistencia recusada")], criado_em="D:20230101000000Z"
-    )
+def test_datar_documento_falha_de_persistencia_vira_erro_e_lote_segue(tmp_path, monkeypatch):
+    corpo = pdf_com_docinfo([longo("Persistencia recusada")], criado_em="D:20230101000000Z")
     manifesto, documento = _manifesto_unitario(
         tmp_path, url="http://x.org/2023/doc.pdf", corpo=corpo
     )
@@ -896,18 +916,14 @@ def test_datar_documento_falha_de_persistencia_vira_erro_e_lote_segue(
         desfecho = datar_documento(documento, manifesto, portal_id=1)
         assert desfecho.desfecho == "erro"
         erros = [
-            detalhe
-            for tipo, detalhe in tipos_eventos(manifesto.caminho)
-            if tipo == "datacao_erro"
+            detalhe for tipo, detalhe in tipos_eventos(manifesto.caminho) if tipo == "datacao_erro"
         ]
         assert erros[0]["fase"] == "persistencia"
     finally:
         manifesto.fechar()
 
 
-def test_datar_documento_enfileiramento_recusado_vira_erro_fila_duplicada(
-    tmp_path, monkeypatch
-):
+def test_datar_documento_enfileiramento_recusado_vira_erro_fila_duplicada(tmp_path, monkeypatch):
     """enfileirar=False NÃO é sucesso mudo nem conta como fila: vira erro com
     fase 'fila_duplicada' e a retomada reprocessa com a fila já visível."""
     corpo = pdf_com_docinfo([longo("Sem data e sem vaga na fila")])
@@ -923,10 +939,7 @@ def test_datar_documento_enfileiramento_recusado_vira_erro_fila_duplicada(
         desfecho = datar_documento(documento, manifesto, portal_id=1)
 
         assert desfecho.desfecho == "erro", "não é desfecho 'fila'"
-        tipos = [
-            (tipo, detalhe)
-            for tipo, detalhe in tipos_eventos(manifesto.caminho)
-        ]
+        tipos = [(tipo, detalhe) for tipo, detalhe in tipos_eventos(manifesto.caminho)]
         erros = [detalhe for tipo, detalhe in tipos if tipo == "datacao_erro"]
         assert len(erros) == 1 and erros[0]["fase"] == "fila_duplicada"
         assert not [d for tipo, d in tipos if tipo == "datacao_fila"], (
@@ -984,9 +997,7 @@ def test_datar_sem_documentos_sai_zero(cli, politeness_veloz, servidor_fake) -> 
     assert "Documentos: 0" in saida_cli(resultado)
 
 
-def test_datar_nao_exige_janela_off_peak(
-    cli, politeness_veloz, servidor_fake, monkeypatch
-):
+def test_datar_nao_exige_janela_off_peak(cli, politeness_veloz, servidor_fake, monkeypatch):
     """Datação é 100% local (AD-11/AD-5: zero rede) — roda fora da janela."""
     from agente_editais import consulta
 
@@ -1021,11 +1032,16 @@ def test_status_mostra_contagens_de_datacao(cli, politeness_veloz, servidor_fake
     decisao = cli.invoke(
         app,
         [
-            "fila", "decidir",
-            "--id", str(item["id"]),
-            "--ano", "2022",
-            "--justificativa", "Processo de 2022 no sistema do IF.",
-            "--autor", "Pesquisadora",
+            "fila",
+            "decidir",
+            "--id",
+            str(item["id"]),
+            "--ano",
+            "2022",
+            "--justificativa",
+            "Processo de 2022 no sistema do IF.",
+            "--autor",
+            "Pesquisadora",
         ],
     )
     assert decisao.exit_code == 0, decisao.output
@@ -1034,7 +1050,7 @@ def test_status_mostra_contagens_de_datacao(cli, politeness_veloz, servidor_fake
 
     assert depois.exit_code == 0, depois.output
     saida = saida_cli(depois)
-    assert (
-        "Datados (CAP-3): 1 (automáticos + decididos em fila)" in saida
-    ), "decisão humana com ano entra na cobertura"
+    assert "Datados (CAP-3): 1 (automáticos + decididos em fila)" in saida, (
+        "decisão humana com ano entra na cobertura"
+    )
     assert "Fila revisão:    0 pendente(s), 1 resolvida(s)" in saida

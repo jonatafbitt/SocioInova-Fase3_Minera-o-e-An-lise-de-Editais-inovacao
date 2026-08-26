@@ -46,7 +46,9 @@ def normalizar_url(url: str) -> str:
     partes = urlsplit(texto)
     esquema = partes.scheme.lower()
     if esquema not in ("http", "https"):
-        raise ValueError(f"esquema inválido ('{esquema or 'ausente'}') — esperado http(s): {url!r}")
+        raise ValueError(
+            f"esquema inválido ('{esquema or 'ausente'}') — esperado http(s): {url!r}"
+        )
     hostname = partes.hostname
     if not partes.netloc or not hostname:
         raise ValueError(f"URL sem host: {url!r}")
@@ -135,7 +137,7 @@ class MapaMestre(BaseModel):
 
 
 def _formatar_localizacao(loc: tuple) -> str:
-    pedacos = []
+    pedacos: list[str] = []
     for parte in loc:
         if isinstance(parte, int):
             pedacos[-1] += f"[{parte}]"
@@ -296,7 +298,9 @@ def hash_arquivo(caminho: Path) -> str:
 # -- sincronização ----------------------------------------------------------
 
 
-def sincronizar_mapa(mapa: MapaMestre, manifesto: Manifesto, *, comando: str, hash_mapa: str) -> dict:
+def sincronizar_mapa(
+    mapa: MapaMestre, manifesto: Manifesto, *, comando: str, hash_mapa: str
+) -> dict:
     """Sincroniza o cadastro com o Manifesto (idempotente — AD-1) e registra evento."""
     agora = agora_iso()
     portais_criados: list[str] = []

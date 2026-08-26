@@ -64,8 +64,8 @@ from .fetcher import (
     baixar_stream,
     nova_sessao,
 )
-from .mapa import Portal, hostname_de, normalizar_url
 from .manifest import Manifesto, agora_iso_utc
+from .mapa import Portal, hostname_de, normalizar_url
 
 VERSAO_CRAWLER = __version__
 
@@ -124,7 +124,9 @@ def slug_de_url(url: str) -> str:
 
 def pasta_do_documento(raiz_corpus: Path, sigla: str, ano_provisorio: int | None) -> Path:
     """``{raiz}/{sigla}/{ano|_sem_ano}/`` — estrutura Instituição/Ano (CAP-4)."""
-    pasta = raiz_corpus / sigla.upper() / (str(ano_provisorio) if ano_provisorio else _PASTA_SEM_ANO)
+    pasta = (
+        raiz_corpus / sigla.upper() / (str(ano_provisorio) if ano_provisorio else _PASTA_SEM_ANO)
+    )
     pasta.mkdir(parents=True, exist_ok=True)
     return pasta
 
@@ -218,9 +220,7 @@ def _quarentena(caminho: Path, manifesto: Manifesto, comando: str, motivo: str) 
     return destino.name
 
 
-def _mover_com_verificacao(
-    temporario: Path, destino: Path, hash_esperado: str
-) -> None:
+def _mover_com_verificacao(temporario: Path, destino: Path, hash_esperado: str) -> None:
     """AD-2: move temp→destino e RECONFERE o hash dos bytes gravados."""
     os.replace(temporario, destino)
     if hash_arquivo_local(destino) != hash_esperado:
@@ -253,7 +253,9 @@ def coletar_portal(
     rotulo = {"instituicao": contexto.instituicao_sigla, "portal": contexto.portal.nome}
     resumo = ResumoColetaPortal(contexto.instituicao_sigla, contexto.portal.nome)
     suspensos_da_execucao = (
-        hosts_suspensos_execucao if hosts_suspensos_execucao is not None else resumo.hosts_suspensos
+        hosts_suspensos_execucao
+        if hosts_suspensos_execucao is not None
+        else resumo.hosts_suspensos
     )
 
     propria = sessao is None
@@ -412,9 +414,7 @@ def _processar_candidato(
         )
 
         if resultado.bloqueio_robots:
-            manifesto.registrar_evento(
-                tipo="robots_bloqueio", comando=comando, detalhe=rotulo
-            )
+            manifesto.registrar_evento(tipo="robots_bloqueio", comando=comando, detalhe=rotulo)
             return DesfechoCandidato("robots_bloqueado")
 
         if resultado.excedeu_cap:
@@ -450,9 +450,7 @@ def _processar_candidato(
                 resultado.status_http == 403
                 and resultado.contador_403 >= polidez.max_403_consecutivos
             ):
-                return DesfechoCandidato(
-                    "host_suspenso", contador_403=resultado.contador_403
-                )
+                return DesfechoCandidato("host_suspenso", contador_403=resultado.contador_403)
             manifesto.registrar_evento(
                 tipo="download_falha",
                 comando=comando,
@@ -586,9 +584,7 @@ def _registrar_captura(
             duplicado = manifesto.documento_mesmo_hash_no_portal(
                 portal_id, hash_hex, exceto_url=url
             )
-            if duplicado is not None and _bytes_integros(
-                duplicado, Path(duplicado["caminho"])
-            ):
+            if duplicado is not None and _bytes_integros(duplicado, Path(duplicado["caminho"])):
                 with manifesto.transacao() as conn:
                     conn.execute(
                         """
@@ -719,9 +715,7 @@ def tempfile_mkstemp(diretorio: Path) -> tuple[int, str]:
     temporários do PRÓPRIO processo.
     """
     diretorio.mkdir(parents=True, exist_ok=True)
-    fd, nome = tempfile.mkstemp(
-        prefix=f"captura-{os.getpid()}-", suffix=".pdf", dir=diretorio
-    )
+    fd, nome = tempfile.mkstemp(prefix=f"captura-{os.getpid()}-", suffix=".pdf", dir=diretorio)
     with os.fdopen(fd, "wb"):
         pass  # fecha o descritor imediatamente
     return fd, nome

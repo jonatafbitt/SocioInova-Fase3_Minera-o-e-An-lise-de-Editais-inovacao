@@ -31,16 +31,14 @@ from .conftest import (
     CONFIGS_DO_REPO,
     coletar_pdfs,
     documentos_do_manifesto,
+    escrever_mapa,
     longo,
     mapa_portal,
     pdf_apenas_imagem,
     pdf_com_texto,
-    escrever_mapa,
     saida_cli,
     tipos_eventos,
-    url_do,
 )
-
 
 # -- infra local: codebooks de teste e adaptador falso ------------------------------
 
@@ -163,9 +161,7 @@ def lotes_do(caminho_manifesto: Path) -> list[dict]:
 
 def _ids_da_entrada(usuario: str) -> list[str]:
     return [
-        linha.split()[2]
-        for linha in usuario.splitlines()
-        if linha.startswith("=== DOCUMENTO ")
+        linha.split()[2] for linha in usuario.splitlines() if linha.startswith("=== DOCUMENTO ")
     ]
 
 
@@ -177,9 +173,7 @@ def _textos_por_id(caminho_manifesto: Path) -> dict[str, str]:
     textos: dict[str, str] = {}
     for documento in documentos_do_manifesto(caminho_manifesto):
         if documento["texto_caminho"]:
-            textos[documento["id"]] = Path(documento["texto_caminho"]).read_text(
-                encoding="utf-8"
-            )
+            textos[documento["id"]] = Path(documento["texto_caminho"]).read_text(encoding="utf-8")
     return textos
 
 
@@ -214,7 +208,9 @@ def preparar_corpus_edital_duplo(cli, politeness_veloz, servidor_fake, corpus):
         servidor_fake,
         {
             "/docs/a/edital-x.pdf": pdf_com_texto([longo("Primeiro documento nativo do edital")]),
-            "/docs/b/edital-x.pdf": pdf_com_texto([longo("Segundo documento nativo do mesmo edital")]),
+            "/docs/b/edital-x.pdf": pdf_com_texto(
+                [longo("Segundo documento nativo do mesmo edital")]
+            ),
         },
     )
     assert cli.invoke(app, ["textuar", "--portal", "TST"]).exit_code == 0
@@ -239,9 +235,7 @@ def excluir_edital_inteiro(caminho_manifesto: Path, url: str) -> None:
     with Manifesto(caminho_manifesto) as manifesto:
         portal_id = manifesto.consultar("SELECT MIN(id) AS i FROM portais")[0]["i"]
         assert manifesto.enfileirar(url, portal_id, "sem_data") is True
-        item = manifesto.consultar(
-            "SELECT id FROM fila_revisao WHERE url_origem = ?", (url,)
-        )[0]
+        item = manifesto.consultar("SELECT id FROM fila_revisao WHERE url_origem = ?", (url,))[0]
         assert (
             manifesto.registrar_decisao_fila(
                 int(item["id"]),
@@ -283,8 +277,8 @@ def test_gate_de_congelamento_resolvido_sai_da_mensagem_mas_outros_seguram(
     caminho_codebook = escrever_codebook(politeness_veloz, congelado=False)
     # congelamento completo, Dahlin e κ continuam pendentes
     texto = caminho_codebook.read_text(encoding="utf-8")
-    texto = texto.replace('congelado_em:', 'congelado_em: "2026-08-25T10:00:00-03:00"')
-    texto = texto.replace('congelado_por:', 'congelado_por: "Pesquisadora Teste"')
+    texto = texto.replace("congelado_em:", 'congelado_em: "2026-08-25T10:00:00-03:00"')
+    texto = texto.replace("congelado_por:", 'congelado_por: "Pesquisadora Teste"')
     caminho_codebook.write_text(texto, encoding="utf-8")
 
     resultado = cli.invoke(app, ["analise", "--portal", "TST", "--modelo", "m"])
@@ -425,9 +419,7 @@ def test_saida_invalida_reprocessa_e_nao_grava_nada_lote_segue_exit0(
     adaptador_falso.respostas.extend(invalidas)
     adaptador_falso.respostas.append(lambda u: _resposta_ok(u, textos))
 
-    resultado = cli.invoke(
-        app, ["analise", "--todos", "--modelo", "m", "--tentativas", "2"]
-    )
+    resultado = cli.invoke(app, ["analise", "--todos", "--modelo", "m", "--tentativas", "2"])
 
     assert resultado.exit_code == 0, saida_cli(resultado)
     saida = saida_cli(resultado)
@@ -501,15 +493,13 @@ def test_citacao_fabricada_vira_citacao_invalidada_fora_dos_validos(
     resultado = cli.invoke(app, ["analise", "--todos", "--modelo", "m"])
 
     assert resultado.exit_code == 0, saida_cli(resultado)
-    por_campo = {
-        linha["campo"]: linha for linha in catalogo_do(politeness_veloz.manifesto)
-    }
+    por_campo = {linha["campo"]: linha for linha in catalogo_do(politeness_veloz.manifesto)}
     fabricada = por_campo["grau_exemplo"]
     assert fabricada["verificacao"] == "citacao_invalidada"
     assert fabricada["citacao_pagina"] is None
-    assert fabricada["citacao_trecho"] == (
-        "trecho fabricado que jamais existiu no texto"
-    ), "custódia preservada"
+    assert fabricada["citacao_trecho"] == ("trecho fabricado que jamais existiu no texto"), (
+        "custódia preservada"
+    )
     valida = por_campo["tipo_exemplo"]
     assert valida["verificacao"] == "ok"
 
@@ -548,8 +538,10 @@ def test_documento_escaneado_e_pulado_sem_ocr_e_nao_entra_na_chamada(
     assert len(escaneados) == 1
     ids_na_chamada = _ids_da_entrada(adaptador_falso.chamadas[0]["usuario"])
     assert len(ids_na_chamada) == 1, "escaneado NÃO alimenta a chamada"
-    assert all(doc["flag_escaneado"] == 0 or doc["id"] not in ids_na_chamada
-               for doc in documentos_do_manifesto(politeness_veloz.manifesto))
+    assert all(
+        doc["flag_escaneado"] == 0 or doc["id"] not in ids_na_chamada
+        for doc in documentos_do_manifesto(politeness_veloz.manifesto)
+    )
 
 
 def test_edital_integralmente_escaneado_vira_erro_dedicado_sem_chamada(
@@ -576,9 +568,7 @@ def test_edital_integralmente_escaneado_vira_erro_dedicado_sem_chamada(
     erro = [d for t, d in eventos if t == "analise_erro"]
     assert len(erro) == 1
     assert erro[0]["motivo"] == "edital_escaneado_sem_ocr"
-    portal_concluida = next(
-        d for t, d in eventos if t == "analise_portal_concluida"
-    )
+    portal_concluida = next(d for t, d in eventos if t == "analise_portal_concluida")
     assert portal_concluida["escaneados_sem_ocr"] == 1
 
 
@@ -604,8 +594,7 @@ def test_mesma_assinatura_continua_o_lote_e_pula_editais_codificados(
     assert catalogo_do(politeness_veloz.manifesto) == linhas_antes, "nada duplica"
     assert len(lotes_do(politeness_veloz.manifesto)) == 1, "mesmo lote continua"
     concluido = [
-        d for t, d in tipos_eventos(politeness_veloz.manifesto)
-        if t == "analise_concluido"
+        d for t, d in tipos_eventos(politeness_veloz.manifesto) if t == "analise_concluido"
     ][-1]
     assert concluido["totais"]["pulados_ja_codificados"] == 1
 
@@ -632,16 +621,13 @@ def test_lote_concluido_eh_reaberto_e_reconcluido_na_retomada(
 
     (lote_segundo,) = lotes_do(politeness_veloz.manifesto)
     assert int(lote_segundo["id"]) == int(lote_primeiro["id"]), "MESMO lote reaberto"
-    assert lote_segundo["aberto_em"] == lote_primeiro["aberto_em"], (
-        "abertura original preservada"
-    )
+    assert lote_segundo["aberto_em"] == lote_primeiro["aberto_em"], "abertura original preservada"
     assert lote_segundo["status"] == "concluido", "re-concluído no fim da rodada"
     assert lote_segundo["concluido_em"] is not None
     assert lote_segundo["concluido_em"] >= lote_primeiro["concluido_em"]
     # durante a segunda rodada o lote esteve aberto (evento lote_l2_continuado)
     continuado = [
-        d for t, d in tipos_eventos(politeness_veloz.manifesto)
-        if t == "lote_l2_continuado"
+        d for t, d in tipos_eventos(politeness_veloz.manifesto) if t == "lote_l2_continuado"
     ]
     assert continuado and continuado[-1]["status"] == "aberto"
 
@@ -656,9 +642,7 @@ def test_instrumento_alterado_abre_novo_lote_com_linhas_proprias(
     adaptador_falso.respostas.append(lambda u: _resposta_ok(u, textos))
     assert cli.invoke(app, ["analise", "--todos", "--modelo", "m"]).exit_code == 0
 
-    segunda = cli.invoke(
-        app, ["analise", "--todos", "--modelo", "m", "--temperatura", "0.7"]
-    )
+    segunda = cli.invoke(app, ["analise", "--todos", "--modelo", "m", "--temperatura", "0.7"])
 
     assert segunda.exit_code == 0, saida_cli(segunda)
     lotes = lotes_do(politeness_veloz.manifesto)
@@ -691,8 +675,7 @@ def test_blip_do_provedor_e_coberto_pelo_orcamento_de_tentativas(
     assert "codificados: 1" in saida_cli(resultado)
     assert len(adaptador_falso.chamadas) == 2
     aplicada = next(
-        d for t, d in tipos_eventos(politeness_veloz.manifesto)
-        if t == "analise_aplicada"
+        d for t, d in tipos_eventos(politeness_veloz.manifesto) if t == "analise_aplicada"
     )
     assert aplicada["tentativas_usadas"] == 2
 
@@ -766,8 +749,7 @@ def test_edital_com_exclusao_vigente_fica_fora_do_lote_sem_chamada(
     editais_codificados = {linha["edital_id"] for linha in catalogo_do(politeness_veloz.manifesto)}
     assert len(editais_codificados) == 1
     concluido = next(
-        d for t, d in tipos_eventos(politeness_veloz.manifesto)
-        if t == "analise_concluido"
+        d for t, d in tipos_eventos(politeness_veloz.manifesto) if t == "analise_concluido"
     )
     assert concluido["totais"]["excluidos"] == 1
 
@@ -782,9 +764,7 @@ def test_seed_fora_do_intervalo_integer_do_sqlite_exit_2(
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
     escrever_codebook(politeness_veloz, congelado=True)
 
-    resultado = cli.invoke(
-        app, ["analise", "--todos", "--modelo", "m", "--seed", str(2**63)]
-    )
+    resultado = cli.invoke(app, ["analise", "--todos", "--modelo", "m", "--seed", str(2**63)])
 
     assert resultado.exit_code == 2
     saida = saida_cli(resultado)
@@ -812,9 +792,7 @@ def test_seed_no_limite_do_intervalo_e_aceita(
 
 
 def test_tentativas_acima_do_teto_sao_recusadas_pela_flag(cli, politeness_veloz) -> None:
-    resultado = cli.invoke(
-        app, ["analise", "--todos", "--modelo", "m", "--tentativas", "11"]
-    )
+    resultado = cli.invoke(app, ["analise", "--todos", "--modelo", "m", "--tentativas", "11"])
     assert resultado.exit_code == 2, "typer recusa max=10 antes de qualquer I/O"
 
 
@@ -924,8 +902,7 @@ def test_drift_de_vigencia_tira_documento_da_entrada_e_lote_segue(
     assert resultado.exit_code == 0, saida_cli(resultado)
     eventos = tipos_eventos(politeness_veloz.manifesto)
     indisponiveis = [
-        d for t, d in eventos if t == "analise_erro"
-        and d.get("motivo") == "texto_indisponivel"
+        d for t, d in eventos if t == "analise_erro" and d.get("motivo") == "texto_indisponivel"
     ]
     assert len(indisponiveis) == 1
     assert indisponiveis[0]["documento_id"] == vitima["id"]
@@ -998,7 +975,7 @@ def test_validar_saida_recusa_violacoes_do_esquema(tmp_path):
         '{"campos": {"grau_exemplo": {"valor": 1, "citacao_documento": "doc000000001", "citacao_trecho": "t"}, "tipo_exemplo": {"valor": "categoria_z", "citacao_documento": "doc000000001", "citacao_trecho": "t"}}}',
         '{"campos": {"grau_exemplo": {"valor": 1, "citacao_documento": "doc000000001", "citacao_trecho": "t"}, "tipo_exemplo": {"valor": "categoria_a", "citacao_documento": "doc000000001", "citacao_trecho": "t"}, "extra": {"valor": 0}}}',
         '{"resposta": 42}',
-        'sem json algum',
+        "sem json algum",
     ]
     for bruto in casos_ruins:
         with pytest.raises(SaidaInvalida):
@@ -1057,8 +1034,8 @@ def test_congelado_por_vazio_normaliza_para_gate_pendente(tmp_path):
         tmp_path,
         base="unfrozen",
         trocas={
-            'congelado_em:': 'congelado_em: "2026-08-25T10:00:00-03:00"',
-            'congelado_por:': 'congelado_por: "   "',
+            "congelado_em:": 'congelado_em: "2026-08-25T10:00:00-03:00"',
+            "congelado_por:": 'congelado_por: "   "',
         },
     )
     codebook = carregar_codebook(caminho)
@@ -1080,15 +1057,13 @@ def test_congelado_por_vazio_normaliza_para_gate_pendente(tmp_path):
         (
             {
                 "decisao: incorporada": "decisao: excluida_justificada",
-                'justificativa:': 'justificativa:',
+                "justificativa:": "justificativa:",
             },
             "justificativa",
         ),
     ],
 )
-def test_resolvida_true_com_decisao_incoerente_eh_recusado(
-    tmp_path, trocas, fragmento
-):
+def test_resolvida_true_com_decisao_incoerente_eh_recusado(tmp_path, trocas, fragmento):
     caminho = _codebook_variante(tmp_path, base="frozen", trocas=trocas)
 
     with pytest.raises(ErroCodebook) as excinfo:
@@ -1105,7 +1080,7 @@ def test_excluida_justificada_sem_justificativa_eh_recusada_mesmo_pendente(tmp_p
         trocas={
             "resolvida: false": "resolvida: false",
             "decisao:": "decisao: excluida_justificada",
-            'justificativa: Pendente de decisão com o(a) orientador(a) (OQ-6).': "justificativa:",
+            "justificativa: Pendente de decisão com o(a) orientador(a) (OQ-6).": "justificativa:",
         },
     )
 
@@ -1119,8 +1094,7 @@ def test_resolvida_false_sem_justificativa_eh_recusado(tmp_path):
         tmp_path,
         base="unfrozen",
         trocas={
-            "justificativa: Pendente de decisão com o(a) orientador(a) (OQ-6).":
-                "justificativa:",
+            "justificativa: Pendente de decisão com o(a) orientador(a) (OQ-6).": "justificativa:",
         },
     )
 
@@ -1182,19 +1156,19 @@ def test_codebook_id_de_campo_duplicado_eh_erro(tmp_path):
     # segunda dimensão com o MESMO id de campo — ids de campos são chaves do catálogo
     insercao = (
         "  - id: dimensao_extra\n"
-        "    nome: \"Extra\"\n"
-        "    definicao_operacional: \"Duplicata de teste.\"\n"
+        '    nome: "Extra"\n'
+        '    definicao_operacional: "Duplicata de teste."\n'
         "    campos:\n"
         "      - id: grau_exemplo\n"
-        "        nome: \"Grau duplicado\"\n"
+        '        nome: "Grau duplicado"\n'
         "        escala: ordinal\n"
         "        valores: [0, 1]\n"
         "        permite_na: false\n"
-        "        definicao_operacional: \"Duplicado.\"\n"
-        "        regra_decisao: \"Regra.\"\n"
-        "        ancoras_positivas: [\"p\"]\n"
-        "        ancoras_negativas: [\"n\"]\n"
-        "        regra_boilerplate: \"b\"\n"
+        '        definicao_operacional: "Duplicado."\n'
+        '        regra_decisao: "Regra."\n'
+        '        ancoras_positivas: ["p"]\n'
+        '        ancoras_negativas: ["n"]\n'
+        '        regra_boilerplate: "b"\n'
     )
     texto = texto.replace("congelamento:", insercao + "congelamento:")
     caminho.write_text(texto, encoding="utf-8")
@@ -1350,9 +1324,7 @@ def test_rede_morta_ou_timeout_vira_erro_provedor_sem_vazar_nada(
     _assert_sem_credenciais(str(excinfo.value))
 
 
-def test_prazo_total_da_chamada_eh_cobrado_alem_do_timeout_do_requests(
-    ambiente_llm, monkeypatch
-):
+def test_prazo_total_da_chamada_eh_cobrado_alem_do_timeout_do_requests(ambiente_llm, monkeypatch):
     """time.monotonic cobre o orçamento TOTAL: resposta que chega depois do
     prazo vira ErroProvedorLLM 'prazo total excedido', mesmo com HTTP 200."""
     relogio = iter([100.0, 100.0 + 999.0])

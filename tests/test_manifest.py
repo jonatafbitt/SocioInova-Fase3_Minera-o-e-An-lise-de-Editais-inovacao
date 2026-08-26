@@ -10,12 +10,12 @@ import pytest
 
 from agente_editais.consulta import app
 from agente_editais.manifest import (
-    ENGINE_MINIMA,
     _MIGRACAO_V1,
     _MIGRACAO_V2,
     _MIGRACAO_V3,
     _MIGRACAO_V4,
     _MIGRACAO_V5,
+    ENGINE_MINIMA,
     ErroAberturaManifesto,
     ErroEngineIncompativel,
     ErroManifestoOcupado,
@@ -25,9 +25,7 @@ from agente_editais.manifest import (
 
 from .conftest import escrever_mapa
 
-TIMESTAMP_ISO_TZ = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$"
-)
+TIMESTAMP_ISO_TZ = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
 
 
 # -- engine velha (guard AD-10) -----------------------------------------------
@@ -113,9 +111,12 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
     segunda = Manifesto(caminho)
     try:
         assert segunda.schema_version() == 6
-        assert segunda.consultar(
-            "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
-        ) == objetos
+        assert (
+            segunda.consultar(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
+            )
+            == objetos
+        )
     finally:
         segunda.fechar()
 
@@ -151,12 +152,8 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
         assert manifesto.contar_instituicoes() == 1, "dados v1 preservados"
         assert manifesto.contar_portais() == 1
         # tabelas da v2/v3 utilizáveis imediatamente após a migração
-        assert (
-            manifesto.registrar_candidato(1, "http://velho.org/e.pdf", "pdf") is True
-        )
-        assert (
-            manifesto.registrar_secao_visitada(1, "http://velho.org", 0) is True
-        )
+        assert manifesto.registrar_candidato(1, "http://velho.org/e.pdf", "pdf") is True
+        assert manifesto.registrar_secao_visitada(1, "http://velho.org", 0) is True
     finally:
         manifesto.fechar()
 
@@ -174,9 +171,10 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     terceira = Manifesto(caminho)
     try:
-        assert terceira.consultar(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ) == objetos_antes
+        assert (
+            terceira.consultar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            == objetos_antes
+        )
     finally:
         terceira.fechar()
 
@@ -235,9 +233,10 @@ def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     terceira = Manifesto(caminho)
     try:
-        assert terceira.consultar(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ) == objetos_v3
+        assert (
+            terceira.consultar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            == objetos_v3
+        )
     finally:
         terceira.fechar()
 
@@ -281,10 +280,7 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
     manifesto = Manifesto(caminho)
     try:
         assert manifesto.schema_version() == 6  # migra até a versão atual
-        colunas = {
-            linha["name"]
-            for linha in manifesto.consultar("PRAGMA table_info(documentos)")
-        }
+        colunas = {linha["name"] for linha in manifesto.consultar("PRAGMA table_info(documentos)")}
         assert {
             "texto_caminho",
             "texto_chars",
@@ -326,9 +322,10 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
 
     quarta = Manifesto(caminho)
     try:
-        assert quarta.consultar(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ) == objetos_v4
+        assert (
+            quarta.consultar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            == objetos_v4
+        )
     finally:
         quarta.fechar()
 
@@ -395,20 +392,16 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
     try:
         assert manifesto.schema_version() == 6
         colunas_documentos = {
-            linha["name"]
-            for linha in manifesto.consultar("PRAGMA table_info(documentos)")
+            linha["name"] for linha in manifesto.consultar("PRAGMA table_info(documentos)")
         }
         colunas_candidatos = {
-            linha["name"]
-            for linha in manifesto.consultar("PRAGMA table_info(candidatos)")
+            linha["name"] for linha in manifesto.consultar("PRAGMA table_info(candidatos)")
         }
         assert "ano_aceito" in colunas_documentos, "coluna do aceite existe"
         assert "texto_ancora" in colunas_candidatos, "âncora persistível desde a descoberta"
         tabelas = {
             linha["name"]
-            for linha in manifesto.consultar(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for linha in manifesto.consultar("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert {"evidencias_datacao", "fila_revisao"} <= tabelas
 
@@ -433,22 +426,20 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
             [("url", "http://s4.org/x.pdf", "documentos.url_origem")],
         )
         linhas_fonte = [
-            linha["fonte"]
-            for linha in manifesto.consultar(
-                "SELECT fonte FROM evidencias_datacao"
-            )
+            linha["fonte"] for linha in manifesto.consultar("SELECT fonte FROM evidencias_datacao")
         ]
         assert sorted(linhas_fonte) == ["ancora", "pdf_meta", "url"], (
             "regravar a mesma fonte substitui a própria linha — nunca duplica"
         )
 
         # -- aceite UPDATE-only com rowcount verificado -----------------------
-        assert manifesto.aplicar_datacao(
-            "def234567890", "http://s4.org/x.pdf", metodo="url", ano=2023
-        ) is True
-        (datado,) = manifesto.consultar(
-            "SELECT metodo_datacao, ano_aceito FROM documentos"
+        assert (
+            manifesto.aplicar_datacao(
+                "def234567890", "http://s4.org/x.pdf", metodo="url", ano=2023
+            )
+            is True
         )
+        (datado,) = manifesto.consultar("SELECT metodo_datacao, ano_aceito FROM documentos")
         assert datado["metodo_datacao"] == "url" and datado["ano_aceito"] == 2023
         assert (
             manifesto.aplicar_datacao(
@@ -555,9 +546,10 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
 
     quinta = Manifesto(caminho)
     try:
-        assert quinta.consultar(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ) == objetos_v5
+        assert (
+            quinta.consultar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            == objetos_v5
+        )
     finally:
         quinta.fechar()
 
@@ -647,9 +639,7 @@ def test_migracao_v5_para_v6_preserva_dados_e_habilita_l2(tmp_path) -> None:
         assert manifesto.schema_version() == 6
         tabelas = {
             linha["name"]
-            for linha in manifesto.consultar(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for linha in manifesto.consultar("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert {"lotes_l2", "catalogo_l2"} <= tabelas
 
@@ -790,9 +780,10 @@ def test_migracao_v5_para_v6_preserva_dados_e_habilita_l2(tmp_path) -> None:
 
     sexta = Manifesto(caminho)
     try:
-        assert sexta.consultar(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ) == objetos_v6
+        assert (
+            sexta.consultar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            == objetos_v6
+        )
     finally:
         sexta.fechar()
 
@@ -884,13 +875,9 @@ def test_schema_v5_guarda_integridade_de_datacao(tmp_path) -> None:
         )
         # ano_aceito fora da janela é recusado PELO BANCO
         with pytest.raises(sqlite3.IntegrityError):
-            manifesto.executar(
-                "UPDATE documentos SET ano_aceito = 2018 WHERE id = 'ghi345678901'"
-            )
+            manifesto.executar("UPDATE documentos SET ano_aceito = 2018 WHERE id = 'ghi345678901'")
         with pytest.raises(sqlite3.IntegrityError):
-            manifesto.executar(
-                "UPDATE documentos SET ano_aceito = 2027 WHERE id = 'ghi345678901'"
-            )
+            manifesto.executar("UPDATE documentos SET ano_aceito = 2027 WHERE id = 'ghi345678901'")
         # fonte fora do conjunto fechado recusada
         with pytest.raises(sqlite3.IntegrityError):
             manifesto.executar(
@@ -997,7 +984,9 @@ def test_eventos_sao_append_only(tmp_path) -> None:
         assert json.loads(linha["detalhe"]) == {"chave": "valor"}
 
         with pytest.raises(sqlite3.IntegrityError):
-            manifesto.executar("UPDATE eventos SET tipo = 'adulterado' WHERE id = ?", (identificador,))
+            manifesto.executar(
+                "UPDATE eventos SET tipo = 'adulterado' WHERE id = ?", (identificador,)
+            )
         with pytest.raises(sqlite3.IntegrityError):
             manifesto.executar("DELETE FROM eventos WHERE id = ?", (identificador,))
     finally:
@@ -1113,7 +1102,9 @@ def test_transacao_faz_rollback_quando_corpo_explode(tmp_path) -> None:
                     "INSERT INTO instituicoes (sigla, nome, criado_em) VALUES ('BBB', 'Dentro', '2026-01-01T00:00:00+00:00')"
                 )
                 raise RuntimeError("boom")
-        siglas = [linha["sigla"] for linha in manifesto.consultar("SELECT sigla FROM instituicoes")]
+        siglas = [
+            linha["sigla"] for linha in manifesto.consultar("SELECT sigla FROM instituicoes")
+        ]
         assert siglas == ["AAA"], "insert da transação abortada não pode persistir"
     finally:
         manifesto.fechar()
@@ -1227,7 +1218,9 @@ def test_cli_mapa_validar_com_lock_segurado_sai_4(cli, configs_reais_no_tmp) -> 
         bloqueador.close()
 
 
-def test_cli_mapa_validar_aceita_mapa_minimo_sem_instituicao_extra(cli, ambiente, tmp_path) -> None:
+def test_cli_mapa_validar_aceita_mapa_minimo_sem_instituicao_extra(
+    cli, ambiente, tmp_path
+) -> None:
     """Sanidade do helper escrever_mapa usado nos demais testes."""
     escrever_mapa(
         ambiente,

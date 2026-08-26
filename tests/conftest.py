@@ -8,7 +8,6 @@ se importar mutuamente.
 
 from __future__ import annotations
 
-import hashlib
 import http.server
 import json
 import logging
@@ -158,7 +157,7 @@ class _Manipulador(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(corpo)
 
-    def do_HEAD(self) -> None:  # noqa: NIP221 — API do http.server
+    def do_HEAD(self) -> None:
         self._responder("HEAD")
 
     def do_GET(self) -> None:
@@ -325,9 +324,7 @@ nome = "Instituição de Teste {sigla}"
 def escrever_mapa(ambiente: SimpleNamespace, texto: str) -> Path:
     """Grava o mapa com o cabeçalho de schema garantido uma única vez."""
     corpo_sem_cabecalho = "\n".join(
-        linha
-        for linha in texto.splitlines()
-        if not linha.strip().startswith("schema_version")
+        linha for linha in texto.splitlines() if not linha.strip().startswith("schema_version")
     )
     conteudo = f"schema_version = 1\n{corpo_sem_cabecalho}\n"
     caminho = ambiente.configs / "mapa-mestre.toml"
@@ -372,9 +369,7 @@ def pagina_com_texto(escritor: PdfWriter, conteudo: str) -> PageObject:
     fonte[NameObject("/BaseFont")] = NameObject("/Helvetica")
     referencia_fonte = escritor._add_object(fonte)
     recursos = DictionaryObject()
-    recursos[NameObject("/Font")] = DictionaryObject(
-        {NameObject("/F1"): referencia_fonte}
-    )
+    recursos[NameObject("/Font")] = DictionaryObject({NameObject("/F1"): referencia_fonte})
     pagina[NameObject("/Resources")] = recursos
     pagina[NameObject("/Contents")] = referencia_fluxo
     return pagina
@@ -459,9 +454,7 @@ def registrar_candidatos(
         portal_id = manifesto.id_portal_por_url(url_do(servidor))
         assert portal_id is not None, "rode 'mapa validar' antes"
         for caminho in caminhos:
-            assert manifesto.registrar_candidato(
-                portal_id, url_do(servidor, caminho), "pdf"
-            )
+            assert manifesto.registrar_candidato(portal_id, url_do(servidor, caminho), "pdf")
 
 
 def coletar_pdfs(
@@ -506,9 +499,7 @@ def documentos_do_manifesto(caminho_manifesto: Path) -> list[dict]:
     with Manifesto(caminho_manifesto) as manifesto:
         return [
             dict(linha)
-            for linha in manifesto.consultar(
-                "SELECT * FROM documentos ORDER BY url_origem"
-            )
+            for linha in manifesto.consultar("SELECT * FROM documentos ORDER BY url_origem")
         ]
 
 
@@ -523,9 +514,7 @@ def tipos_eventos(caminho_manifesto: Path) -> list[tuple[str, dict]]:
     with Manifesto(caminho_manifesto) as manifesto:
         return [
             (linha["tipo"], json.loads(linha["detalhe"]))
-            for linha in manifesto.consultar(
-                "SELECT tipo, detalhe FROM eventos ORDER BY id"
-            )
+            for linha in manifesto.consultar("SELECT tipo, detalhe FROM eventos ORDER BY id")
         ]
 
 

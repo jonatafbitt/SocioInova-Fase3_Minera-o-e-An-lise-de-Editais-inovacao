@@ -45,8 +45,8 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from .mapa import Portal
 from .manifest import Manifesto
+from .mapa import Portal
 
 _EXTENSAO_TXT = ".txt"
 _CHUNK_LEITURA = 1024 * 1024
@@ -125,13 +125,13 @@ def ler_metadados(caminho: str | Path) -> dict[str, str | None] | None:
     try:
         leitor = PdfReader(str(caminho))
         informacoes = leitor.metadata
-    except Exception:  # noqa: BLE001 — PDF inválido é resposta (None), não crash
+    except Exception:
         return None
     metadados: dict[str, str | None] = {}
     for campo, chave in _CAMPOS_DOCINFO:
         try:
             bruto = informacoes.get(chave) if informacoes is not None else None
-        except Exception:  # noqa: BLE001 — docinfo podre não derruba a leitura
+        except Exception:
             bruto = None
         metadados[campo] = str(bruto) if bruto else None
     return metadados
@@ -192,7 +192,7 @@ def extrair_documento(
     try:
         leitor = PdfReader(str(pdf))
         paginas = list(leitor.pages)
-    except Exception as exc:  # noqa: BLE001 — PDF inválido é desfecho, não crash
+    except Exception as exc:
         manifesto.registrar_evento(
             tipo="texto_erro",
             comando=comando,
@@ -205,7 +205,7 @@ def extrair_documento(
     for pagina in paginas:
         try:
             pedacos.append(_texto_da_pagina(pagina))
-        except Exception:  # noqa: BLE001 — página problemática rende vazio
+        except Exception:
             pedacos.append("")
             falhas_parse += 1
     texto = "\n".join(pedacos)

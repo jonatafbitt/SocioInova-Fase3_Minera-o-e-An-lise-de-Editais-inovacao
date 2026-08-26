@@ -17,8 +17,8 @@ import sys
 
 import pytest
 
-from agente_editais.consulta import app
 from agente_editais.coleta import ano_provisorio_da_url, pasta_do_documento, slug_de_url
+from agente_editais.consulta import app
 from agente_editais.fetcher import carregar_polidez
 from agente_editais.manifest import Manifesto
 
@@ -52,11 +52,7 @@ def _mapa_url_base(url_base: str, *, sigla: str) -> str:
 
 
 def _mapa_dois_portais(servidor_a, sigla_a: str, servidor_b, sigla_b: str) -> str:
-    return (
-        _mapa_portal(servidor_a, sigla=sigla_a)
-        + "\n"
-        + _mapa_portal(servidor_b, sigla=sigla_b)
-    )
+    return _mapa_portal(servidor_a, sigla=sigla_a) + "\n" + _mapa_portal(servidor_b, sigla=sigla_b)
 
 
 @pytest.fixture
@@ -72,9 +68,7 @@ def _registrar_candidatos(servidor, caminho_manifesto, caminhos: list[str]) -> N
         portal_id = manifesto.id_portal_por_url(url_do(servidor))
         assert portal_id is not None, "rode 'mapa validar' antes"
         for caminho in caminhos:
-            assert manifesto.registrar_candidato(
-                portal_id, url_do(servidor, caminho), "pdf"
-            )
+            assert manifesto.registrar_candidato(portal_id, url_do(servidor, caminho), "pdf")
 
 
 def _documentos(caminho_manifesto) -> list[dict]:
@@ -224,9 +218,7 @@ def test_hash_duplicado_intra_portal_um_documento_dois_registros_cruzados(
     servidor_fake.paginas["/y/dois.pdf"] = (200, "application/pdf", corpo)
     escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
-    _registrar_candidatos(
-        servidor_fake, politeness_veloz.manifesto, ["/x/um.pdf", "/y/dois.pdf"]
-    )
+    _registrar_candidatos(servidor_fake, politeness_veloz.manifesto, ["/x/um.pdf", "/y/dois.pdf"])
 
     resultado = cli.invoke(app, ["coletar", "--portal", "TST"])
 
@@ -277,9 +269,7 @@ def test_recrawl_idempotente_zero_downloads_e_zero_retrabalho(
     assert "baixados: 0" in saida
     assert "3 já íntegros" in saida
     for caminho in caminhos:
-        assert _gets(servidor_fake, caminho) == gets_antes[caminho], (
-            "nenhum byte re-baixado"
-        )
+        assert _gets(servidor_fake, caminho) == gets_antes[caminho], "nenhum byte re-baixado"
     assert len(_documentos(politeness_veloz.manifesto)) == 3
 
 
@@ -393,16 +383,12 @@ def test_host_com_403_persistente_suspende_lote_e_outros_portais_seguem(
         + "\n"
         # portal B usa hostname EXPLÍTITO 'localhost' — server_address reporta
         # o IP do bind, e a suspensão distingue hosts pelo hostname da URL
-        + _mapa_url_base(
-            f"http://localhost:{saudavel.server_address[1]}", sigla="BBB"
-        ),
+        + _mapa_url_base(f"http://localhost:{saudavel.server_address[1]}", sigla="BBB"),
     )
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
     with Manifesto(politeness_veloz.manifesto) as manifesto:
         id_aaa = manifesto.id_portal_por_url(url_do(bloqueado))
-        id_bbb = manifesto.id_portal_por_url(
-            f"http://localhost:{saudavel.server_address[1]}"
-        )
+        id_bbb = manifesto.id_portal_por_url(f"http://localhost:{saudavel.server_address[1]}")
         assert id_aaa is not None and id_bbb is not None
         for indice in range(1, 5):
             assert manifesto.registrar_candidato(
@@ -465,9 +451,7 @@ def test_suspensao_de_host_e_compartilhada_entre_portais_no_mesmo_host(
     )
     with Manifesto(politeness_veloz.manifesto) as manifesto:
         id_bbb = manifesto.id_portal_por_url(url_do(outro))
-        assert manifesto.registrar_candidato(
-            id_bbb, url_do(outro, "/de-outro/b1.pdf"), "pdf"
-        )
+        assert manifesto.registrar_candidato(id_bbb, url_do(outro, "/de-outro/b1.pdf"), "pdf")
 
     resultado = cli.invoke(app, ["coletar", "--todos"])
 
@@ -537,9 +521,9 @@ def test_excede_cap_de_tamanho_nao_grava_e_lote_segue(
     saida = resultado.output + (resultado.stderr or "")
     assert "1 acima do cap" in saida
     documentos = _documentos(politeness_veloz.manifesto)
-    assert [doc["id"] for doc in documentos] == [
-        hashlib.sha256(pequeno).hexdigest()[:12]
-    ], "excedente NÃO é gravado; lote segue"
+    assert [doc["id"] for doc in documentos] == [hashlib.sha256(pequeno).hexdigest()[:12]], (
+        "excedente NÃO é gravado; lote segue"
+    )
     tipos = [tipo for tipo, _ in _tipos_eventos(politeness_veloz.manifesto)]
     assert tipos.count("tamanho_excedido") == 1
     assert list((corpus / ".tmp").glob("captura-*")) == [], "temporário limpo"
@@ -569,9 +553,7 @@ def test_conteudo_nao_pdf_nao_vira_documento_e_lote_segue(
     saida = resultado.output + (resultado.stderr or "")
     assert "1 não-PDF" in saida
     documentos = _documentos(politeness_veloz.manifesto)
-    assert [doc["id"] for doc in documentos] == [
-        hashlib.sha256(pdf(b"legitimo")).hexdigest()[:12]
-    ]
+    assert [doc["id"] for doc in documentos] == [hashlib.sha256(pdf(b"legitimo")).hexdigest()[:12]]
     tipos = [tipo for tipo, _ in _tipos_eventos(politeness_veloz.manifesto)]
     assert tipos.count("conteudo_inesperado") == 1
 
@@ -742,7 +724,7 @@ def test_download_com_redirect_hop_a_hop_registra_url_origem_original(
     assert resultado.exit_code == 0, resultado.output
     (documento,) = _documentos(politeness_veloz.manifesto)
     url_velha = url_do(servidor_fake, "/velho/a.pdf")
-    url_nova = url_do(servidor_fake, "/novo/a.pdf")
+    _url_nova = url_do(servidor_fake, "/novo/a.pdf")
     assert documento["url_origem"] == url_velha, "L1 mantém a URL ORIGINAL"
     assert documento["hash_sha256"] == hashlib.sha256(corpo_alvo).hexdigest()
     with open(documento["caminho"], "rb") as bruto:
@@ -868,9 +850,7 @@ def test_falha_de_verificacao_pos_mover_vira_evento_e_lote_segue(
         )
     escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
-    _registrar_candidatos(
-        servidor_fake, politeness_veloz.manifesto, ["/v0.pdf", "/v1.pdf"]
-    )
+    _registrar_candidatos(servidor_fake, politeness_veloz.manifesto, ["/v0.pdf", "/v1.pdf"])
 
     # hash pós-mover SEMPRE diverge: move acontece, verificação reprova
     monkeypatch.setattr(modulo_coleta, "hash_arquivo_local", lambda _caminho: "0" * 64)

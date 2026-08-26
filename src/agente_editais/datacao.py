@@ -48,8 +48,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from .coleta import _ANOS_JANELA, _RE_ANO, anos_janela_no_path
-from .mapa import Portal
 from .manifest import Manifesto
+from .mapa import Portal
 from .texto import ler_metadados
 
 FONTE_ORDEM: tuple[str, ...] = ("url", "ancora", "pdf_meta")
@@ -87,11 +87,7 @@ def _anos_da_url(url: str) -> tuple[set[int], set[int]]:
 
 def _anos_fora_da_janela(texto: str) -> set[int]:
     """Anos 20XX FORA da janela presentes no texto — só para o relatório."""
-    return {
-        int(ano)
-        for ano in _RE_ANO_LIVRE.findall(texto)
-        if int(ano) not in _ANOS_JANELA
-    }
+    return {int(ano) for ano in _RE_ANO_LIVRE.findall(texto) if int(ano) not in _ANOS_JANELA}
 
 
 def _ano_de_data_docinfo(bruto: str) -> int | None:
@@ -284,9 +280,7 @@ def datar_documento(
     manifesto.registrar_evidencias(documento_id, url, evidencias)
 
     if motivo is None:
-        persistiu = manifesto.aplicar_datacao(
-            documento_id, url, metodo=metodo, ano=ano
-        )
+        persistiu = manifesto.aplicar_datacao(documento_id, url, metodo=metodo, ano=ano)
         if not persistiu:
             manifesto.registrar_evento(
                 tipo="datacao_erro",
@@ -302,9 +296,7 @@ def datar_documento(
                 "ano_aceito": ano,
                 "metodo": metodo,
                 "anos_por_fonte": {
-                    fonte: sorted(anos)
-                    for fonte, anos in anos_por_fonte.items()
-                    if anos
+                    fonte: sorted(anos) for fonte, anos in anos_por_fonte.items() if anos
                 },
                 "fontes_consultadas": [fonte for fonte, *_ in evidencias],
                 "total_evidencias": len(evidencias),
@@ -326,9 +318,7 @@ def datar_documento(
     detalhe_fila = {
         **rotulo,
         "motivo": motivo,
-        "anos_encontrados": sorted(
-            {ano_ for anos in anos_por_fonte.values() for ano_ in anos}
-        ),
+        "anos_encontrados": sorted({ano_ for anos in anos_por_fonte.values() for ano_ in anos}),
         "fontes_consultadas": [fonte for fonte, *_ in evidencias],
         "total_evidencias": len(evidencias),
         "divergencia": motivo == MOTIVO_DIVERGENCIA,
@@ -336,9 +326,7 @@ def datar_documento(
     if fora_da_janela:
         # sinal de qualidade: anos fora da janela viram EVIDÊNCIA, jamais aceite
         detalhe_fila["anos_fora_da_janela"] = sorted(fora_da_janela)
-    manifesto.registrar_evento(
-        tipo="datacao_fila", comando=comando, detalhe=detalhe_fila
-    )
+    manifesto.registrar_evento(tipo="datacao_fila", comando=comando, detalhe=detalhe_fila)
     return DesfechoDatacao("fila", motivo=motivo)
 
 

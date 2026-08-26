@@ -21,9 +21,9 @@ from agente_editais.consulta import _COLUNAS_CSV, app
 from agente_editais.manifest import Manifesto
 
 from .conftest import (
-    escrever_mapa,
     descobrir_coletar,
     documentos_do_manifesto,
+    escrever_mapa,
     fila_do_manifesto,
     html_lista,
     longo,
@@ -34,26 +34,23 @@ from .conftest import (
     saida_cli,
     tipos_eventos,
     url_do,
-    corpus,
 )
 
 _EDITAL_GEMEOS = "tst-2023-gemeo"
-_RE_RESUMO = re.compile(
-    r"Resumo: (\d+) documento\(s\) listado\(s\), (\d+) excluído\(s\)"
-)
+_RE_RESUMO = re.compile(r"Resumo: (\d+) documento\(s\) listado\(s\), (\d+) excluído\(s\)")
 
 # Ordem determinística da listagem completa (patch 9): flag de ano vazio em
 # PRIMEIRO (pendentes por último), MANTENDO as chaves seguintes do ORDER BY
 # original (instituição → ano → edital). Fixada documento a documento (ids
 # únicos) no teste do CSV.
 _ORDEM_ESPERADA_SUFIXOS = (
-    "/2024/f.pdf",            # AGI antes de TST (chave seguinte: instituição)
-    "/docs/c.pdf",            # TST · 2022 (fila_humana)
-    "/2023/a.pdf",            # tst-2023-a < tst-2023-gemeo
+    "/2024/f.pdf",  # AGI antes de TST (chave seguinte: instituição)
+    "/docs/c.pdf",  # TST · 2022 (fila_humana)
+    "/2023/a.pdf",  # tst-2023-a < tst-2023-gemeo
     "/2023/gemeo.pdf",
     "/2024/b.pdf",
     "/outro/2023/gemeo.pdf",  # 2025 (fila_humana)
-    "/docs/p.pdf",            # ano vazio POR ÚLTIMO
+    "/docs/p.pdf",  # ano vazio POR ÚLTIMO
 )
 
 
@@ -74,8 +71,7 @@ def _urls_na_ordem(estado: dict) -> list[str]:
         return encontradas[0]
 
     canonico = next(
-        u for u in docs
-        if _caminho_de(u).endswith("/2023/gemeo.pdf") and "/outro/" not in u
+        u for u in docs if _caminho_de(u).endswith("/2023/gemeo.pdf") and "/outro/" not in u
     )
     return [
         unico("/2024/f.pdf"),
@@ -94,8 +90,7 @@ def _urls_na_ordem(estado: dict) -> list[str]:
 def _decidir(cli, caminho_manifesto, url_suffix: str, *argumentos: str) -> None:
     """Decide o item de fila cuja url_origem termina com ``url_suffix``."""
     (item,) = [
-        i for i in fila_do_manifesto(caminho_manifesto)
-        if i["url_origem"].endswith(url_suffix)
+        i for i in fila_do_manifesto(caminho_manifesto) if i["url_origem"].endswith(url_suffix)
     ]
     resultado = cli.invoke(app, ["fila", "decidir", "--id", str(item["id"]), *argumentos])
     assert resultado.exit_code == 0, resultado.output
@@ -136,12 +131,8 @@ def _montar_corpus(
             ]
         ),
         pdfs={
-            "/2023/a.pdf": pdf_com_docinfo(
-                [longo("Automatico A")], criado_em="D:20230601000000Z"
-            ),
-            "/2024/b.pdf": pdf_com_docinfo(
-                [longo("Automatico B")], criado_em="D:20240201000000Z"
-            ),
+            "/2023/a.pdf": pdf_com_docinfo([longo("Automatico A")], criado_em="D:20230601000000Z"),
+            "/2024/b.pdf": pdf_com_docinfo([longo("Automatico B")], criado_em="D:20240201000000Z"),
             "/2023/gemeo.pdf": pdf_com_docinfo(
                 [longo("Gemeo automatico")], criado_em="D:20230501000000Z"
             ),
@@ -276,9 +267,9 @@ def test_consulta_sem_filtros_bate_com_sql_independente(
     saida = saida_cli(resultado)
     listados, excluidos = _totais_da_saida(saida)
     assert "Resumo: 7 documento(s) listado(s), 1 excluído(s)" in saida
-    assert (
-        "Por ano_fonte: automatica=4, fila_humana=2, vazio=1" in saida
-    ), "pendentes aparecem como vazio — nada silenciado"
+    assert "Por ano_fonte: automatica=4, fila_humana=2, vazio=1" in saida, (
+        "pendentes aparecem como vazio — nada silenciado"
+    )
 
     with Manifesto(politeness_veloz.manifesto) as manifesto:
         total_sql = _contagem_sql_independente(manifesto, excluidos=False)
@@ -317,9 +308,7 @@ def test_consulta_filtros_combinados_em_and(
 ):
     _montar_corpus(cli, politeness_veloz, servidor_fake, criar_servidor_fake)
 
-    combinado = cli.invoke(
-        app, ["consultar", "--ano", "2024", "--categoria", "agencia_inovacao"]
-    )
+    combinado = cli.invoke(app, ["consultar", "--ano", "2024", "--categoria", "agencia_inovacao"])
 
     assert combinado.exit_code == 0, saida_cli(combinado)
     saida = saida_cli(combinado)
@@ -574,9 +563,7 @@ def test_custodia_edital_vazio_ou_ausente_exit_2_antes_do_banco(cli, politeness_
     assert not Path(politeness_veloz.manifesto).exists()
 
 
-def test_saida_apontando_para_o_manifesto_recusada_antes_do_banco(
-    cli, politeness_veloz
-):
+def test_saida_apontando_para_o_manifesto_recusada_antes_do_banco(cli, politeness_veloz):
     """Patch 5: export nunca pode truncar o próprio banco (guarda catastrófica)."""
     caminho_manifesto = politeness_veloz.manifesto
     assert not Path(caminho_manifesto).exists()
@@ -629,8 +616,7 @@ def test_custodia_reconstroi_cadeia_sem_ler_nenhum_pdf(
 
     por_url = {d["captura"]["url_origem"]: d for d in dados["documentos"]}
     url_automatico = next(
-        u for u in por_url
-        if u.endswith("/2023/gemeo.pdf") and "/outro/" not in u
+        u for u in por_url if u.endswith("/2023/gemeo.pdf") and "/outro/" not in u
     )
     automatico = por_url[url_automatico]
     captura = automatico["captura"]
@@ -723,9 +709,7 @@ def test_custodia_falha_de_escrita_do_json_exit_1_e_evento_honesto(
     assert "falha" in saida.lower()
     assert '"documentos"' not in saida, "JSON não vaza no stdout em falha de arquivo"
     assert not ruim.exists()
-    assert _ultimo_evento(politeness_veloz.manifesto, "custodia_concluida")["escrita"] == (
-        "falha"
-    )
+    assert _ultimo_evento(politeness_veloz.manifesto, "custodia_concluida")["escrita"] == ("falha")
 
 
 # -- Custódia operacional: eventos finais e regressões da story ------------------------
@@ -741,9 +725,12 @@ def test_eventos_finais_registrados_apos_a_escrita_com_resultado_ok(
     destino_json = Path(politeness_veloz.configs).parent / "custodia.json"
 
     assert cli.invoke(app, ["consultar", "--saida", str(destino_csv)]).exit_code == 0
-    assert cli.invoke(
-        app, ["custodia", "--edital", _EDITAL_GEMEOS, "--saida", str(destino_json)]
-    ).exit_code == 0
+    assert (
+        cli.invoke(
+            app, ["custodia", "--edital", _EDITAL_GEMEOS, "--saida", str(destino_json)]
+        ).exit_code
+        == 0
+    )
 
     assert _ultimo_evento(politeness_veloz.manifesto, "consultar_concluido")["escrita"] == "ok"
     assert _ultimo_evento(politeness_veloz.manifesto, "custodia_concluida")["escrita"] == "ok"
@@ -753,7 +740,9 @@ def test_fila_decidir_sem_justificativa_continua_exit_2(
     cli, politeness_veloz, servidor_fake, criar_servidor_fake, corpus
 ):
     _montar_corpus(cli, politeness_veloz, servidor_fake, criar_servidor_fake)
-    (item,) = [i for i in fila_do_manifesto(politeness_veloz.manifesto) if i["status"] == "pendente"]
+    (item,) = [
+        i for i in fila_do_manifesto(politeness_veloz.manifesto) if i["status"] == "pendente"
+    ]
 
     resultado = cli.invoke(app, ["fila", "decidir", "--id", str(item["id"]), "--ano", "2023"])
 

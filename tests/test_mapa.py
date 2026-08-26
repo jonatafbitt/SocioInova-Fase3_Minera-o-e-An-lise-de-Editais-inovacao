@@ -13,7 +13,6 @@ from agente_editais.mapa import ErroMapa, carregar_mapa, hash_arquivo, normaliza
 
 from .conftest import CONFIGS_DO_REPO, escrever_mapa, mapa_minimo
 
-
 # -- mapa válido -------------------------------------------------------------
 
 
@@ -81,7 +80,9 @@ def test_sincronizacao_e_idempotente_ad1(cli, configs_reais_no_tmp) -> None:
         )
 
 
-def test_sync_update_branch_grava_novo_valor_e_lista_atualizados(cli, configs_reais_no_tmp) -> None:
+def test_sync_update_branch_grava_novo_valor_e_lista_atualizados(
+    cli, configs_reais_no_tmp
+) -> None:
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
 
     caminho_mapa = configs_reais_no_tmp.configs / "mapa-mestre.toml"
@@ -147,7 +148,11 @@ def test_categoria_invalida_nomes_linha_campo_e_exit_diferente_de_zero(cli, ambi
 """
     )
     caminho = escrever_mapa(ambiente, texto)
-    linha_esperada = next(n for n, l in enumerate(caminho.read_text(encoding="utf-8").splitlines(), 1) if '"integr"' in l)
+    linha_esperada = next(
+        n
+        for n, l in enumerate(caminho.read_text(encoding="utf-8").splitlines(), 1)
+        if '"integr"' in l
+    )
 
     resultado = cli.invoke(app, ["mapa", "validar"])
 
@@ -251,7 +256,10 @@ def test_normalizar_url_minusculas_fragment_utm(bruta: str, esperada: str) -> No
         ("http://a.org:8080/x", "http://a.org:8080/x"),
         ("https://A.ORG:443", "https://a.org"),
         # parse_qsl decodifica; urlencode recodifica — sem % crus indevidos
-        ("https://a.org/b?titulo=Edital%20n%C2%BA%201&x=%2B", "https://a.org/b?titulo=Edital+n%C2%BA+1&x=%2B"),
+        (
+            "https://a.org/b?titulo=Edital%20n%C2%BA%201&x=%2B",
+            "https://a.org/b?titulo=Edital+n%C2%BA+1&x=%2B",
+        ),
     ],
 )
 def test_normalizar_url_portas_default_e_query_recodificada(bruta: str, esperada: str) -> None:

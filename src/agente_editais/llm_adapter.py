@@ -97,9 +97,7 @@ def definir_instrumento(
         or not math.isfinite(timeout_efetivo)
         or timeout_efetivo <= 0
     ):
-        raise ValueError(
-            f"timeout deve ser número finito positivo (recebido {timeout_efetivo!r})"
-        )
+        raise ValueError(f"timeout deve ser número finito positivo (recebido {timeout_efetivo!r})")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         raise ValueError(f"seed deve ser inteiro ou ausente (recebido {seed!r})")
     _instrumento = Instrumento(
@@ -141,8 +139,7 @@ def concluir(sistema: str, usuario: str) -> str:
     """
     if _instrumento is None:
         raise ErroProvedorLLM(
-            "instrumento não definido: chame llm_adapter.definir_instrumento() "
-            "antes de concluir()"
+            "instrumento não definido: chame llm_adapter.definir_instrumento() antes de concluir()"
         )
     base_url = _exigir_env(ENV_BASE_URL).rstrip("/")
     chave = _exigir_env(ENV_CHAVE)
@@ -167,25 +164,19 @@ def concluir(sistema: str, usuario: str) -> str:
             timeout=_instrumento.timeout_s,
         )
     except requests.RequestException as exc:
-        raise ErroProvedorLLM(
-            f"falha de rede com o provedor LLM ({type(exc).__name__})"
-        ) from exc
+        raise ErroProvedorLLM(f"falha de rede com o provedor LLM ({type(exc).__name__})") from exc
     # Prazo TOTAL da chamada (time.monotonic, imune a ajustes de relógio):
     # o timeout do requests limita cada operação de socket — um trickle que
     # pinga dentro do limite por leitura pode estourar o orçamento total.
     if time.monotonic() - inicio > _instrumento.timeout_s:
         raise ErroProvedorLLM("prazo total excedido na chamada ao provedor LLM")
     if resposta.status_code != 200:
-        raise ErroProvedorLLM(
-            f"provedor LLM respondeu HTTP {resposta.status_code}"
-        )
+        raise ErroProvedorLLM(f"provedor LLM respondeu HTTP {resposta.status_code}")
     try:
         dados = resposta.json()
         conteudo = dados["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError) as exc:
-        raise ErroProvedorLLM(
-            "resposta do provedor LLM em formato inesperado"
-        ) from exc
+        raise ErroProvedorLLM("resposta do provedor LLM em formato inesperado") from exc
     if not isinstance(conteudo, str) or not conteudo.strip():
         raise ErroProvedorLLM("provedor LLM devolveu conteúdo vazio")
     return conteudo

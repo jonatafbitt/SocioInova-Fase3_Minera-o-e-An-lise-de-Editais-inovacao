@@ -544,7 +544,9 @@ class Manifesto:
 
     # -- escrita -----------------------------------------------------------
 
-    def registrar_evento(self, tipo: str, comando: str, detalhe: dict[str, Any] | None = None) -> int:
+    def registrar_evento(
+        self, tipo: str, comando: str, detalhe: dict[str, Any] | None = None
+    ) -> int:
         """Append-only: única forma de inserir em ``eventos`` (AD-10)."""
         conn = self._garantir_aberto()
         try:
@@ -673,7 +675,9 @@ class Manifesto:
         if portal_id is None:
             return int(self.consultar("SELECT COUNT(*) FROM candidatos")[0][0])
         return int(
-            self.consultar("SELECT COUNT(*) FROM candidatos WHERE portal_id = ?", (portal_id,))[0][0]
+            self.consultar("SELECT COUNT(*) FROM candidatos WHERE portal_id = ?", (portal_id,))[0][
+                0
+            ]
         )
 
     def contar_secoes_visitadas(self, portal_id: int | None = None) -> int:
@@ -693,9 +697,7 @@ class Manifesto:
         é registrado como evento pelo chamador — nunca silencioso (AD-10).
         """
         with self.transacao() as conn:
-            cursor = conn.execute(
-                "DELETE FROM secoes_visitadas WHERE portal_id = ?", (portal_id,)
-            )
+            cursor = conn.execute("DELETE FROM secoes_visitadas WHERE portal_id = ?", (portal_id,))
             return int(cursor.rowcount)
 
     # -- coleta (CAP-4, migração v3) -----------------------------------------
@@ -906,12 +908,8 @@ class Manifesto:
             # enfileirado"; qualquer outra violação (FK, CHECK, NOT NULL)
             # PROPAGA em vez de virar sucesso mudo.
             mensagem = str(exc)
-            duplicado_pendente = (
-                "idx_fila_revisao_pendente_por_url" in mensagem
-                or (
-                    "UNIQUE constraint failed" in mensagem
-                    and "fila_revisao.url_origem" in mensagem
-                )
+            duplicado_pendente = "idx_fila_revisao_pendente_por_url" in mensagem or (
+                "UNIQUE constraint failed" in mensagem and "fila_revisao.url_origem" in mensagem
             )
             if duplicado_pendente:
                 return False
@@ -936,9 +934,7 @@ class Manifesto:
         """Itens da fila na ordem de criação; ``None`` lista todos os status."""
         if status is None:
             return self.consultar("SELECT * FROM fila_revisao ORDER BY id")
-        return self.consultar(
-            "SELECT * FROM fila_revisao WHERE status = ? ORDER BY id", (status,)
-        )
+        return self.consultar("SELECT * FROM fila_revisao WHERE status = ? ORDER BY id", (status,))
 
     def registrar_decisao_fila(
         self,
@@ -1023,9 +1019,7 @@ class Manifesto:
         if status is None:
             return int(self.consultar("SELECT COUNT(*) FROM fila_revisao")[0][0])
         return int(
-            self.consultar(
-                "SELECT COUNT(*) FROM fila_revisao WHERE status = ?", (status,)
-            )[0][0]
+            self.consultar("SELECT COUNT(*) FROM fila_revisao WHERE status = ?", (status,))[0][0]
         )
 
     def evidencias_da_url(self, url_origem: str) -> list[sqlite3.Row]:
@@ -1098,9 +1092,7 @@ class Manifesto:
             raise ValueError(f"assinatura incompleta: faltam {', '.join(ausentes)}")
         desconhecidas = [k for k in assinatura if k not in colunas]
         if desconhecidas:
-            raise ValueError(
-                f"assinatura com chaves desconhecidas: {', '.join(desconhecidas)}"
-            )
+            raise ValueError(f"assinatura com chaves desconhecidas: {', '.join(desconhecidas)}")
         valores = tuple(assinatura[c] for c in colunas)
         where = " AND ".join(f"{c} IS ?" for c in colunas)
         selecao = (
@@ -1152,9 +1144,7 @@ class Manifesto:
                 )
             for obrigatoria in ("campo", "valor"):
                 if not registro.get(obrigatoria):
-                    raise ValueError(
-                        f"campo '{obrigatoria}' é obrigatório em cada registro"
-                    )
+                    raise ValueError(f"campo '{obrigatoria}' é obrigatório em cada registro")
         with self.transacao() as conn:
             for registro in campos:
                 conn.execute(
@@ -1211,14 +1201,11 @@ class Manifesto:
         """
         if lote_id is None:
             return int(
-                self.consultar(
-                    "SELECT COUNT(*) FROM catalogo_l2 WHERE verificacao = 'ok'"
-                )[0][0]
+                self.consultar("SELECT COUNT(*) FROM catalogo_l2 WHERE verificacao = 'ok'")[0][0]
             )
         return int(
             self.consultar(
-                "SELECT COUNT(*) FROM catalogo_l2 "
-                "WHERE lote_id = ? AND verificacao = 'ok'",
+                "SELECT COUNT(*) FROM catalogo_l2 WHERE lote_id = ? AND verificacao = 'ok'",
                 (lote_id,),
             )[0][0]
         )
@@ -1301,8 +1288,7 @@ class Manifesto:
         dados["versao_agente"] = __version__
         dados["schema_version"] = self.schema_version()
         documentos = self.consultar(
-            "SELECT * FROM documentos WHERE edital_id = ? "
-            "ORDER BY data_captura, id, url_origem",
+            "SELECT * FROM documentos WHERE edital_id = ? ORDER BY data_captura, id, url_origem",
             (edital_id,),
         )
         documentos_saida: list[dict[str, Any]] = []

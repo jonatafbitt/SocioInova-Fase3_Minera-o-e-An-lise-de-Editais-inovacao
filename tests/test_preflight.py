@@ -90,9 +90,7 @@ def test_seeds_mistas_separam_acessiveis_inacessiveis_e_registram_eventos(
         )
 
 
-def test_pre_voo_com_todas_mortas_segue_o_lote_exit0(
-    cli, politeness_veloz, porta_morta
-) -> None:
+def test_pre_voo_com_todas_mortas_segue_o_lote_exit0(cli, politeness_veloz, porta_morta) -> None:
     morta = f"http://127.0.0.1:{porta_morta}/x"
     escrever_mapa(politeness_veloz, mapa_minimo(url_portal=morta, seeds=[morta]))
     resultado = cli.invoke(app, ["preflight"])
@@ -115,9 +113,9 @@ def test_executar_pre_voo_nunca_aborta_o_lote(servidor_fake, porta_morta) -> Non
     assert resultados[2].erro == "HTTP 500"
     assert resultados[1].status_http is None
     erro_conexao = (resultados[1].erro or "").lower()
-    assert any(
-        pista in erro_conexao for pista in ("refused", "10061", "recusou")
-    ), f"esperava recusa de conexão, obtive: {resultados[1].erro}"
+    assert any(pista in erro_conexao for pista in ("refused", "10061", "recusou")), (
+        f"esperava recusa de conexão, obtive: {resultados[1].erro}"
+    )
 
 
 def test_url_malformada_vira_resultado_negativo_sem_abortar_o_lote(servidor_fake) -> None:
@@ -274,20 +272,18 @@ def test_carregar_polidez_default_de_probe(tmp_path) -> None:
     [
         # [probe] precisa ser tabela, não escalar
         (
-            'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\n'
-            'probe = "rapida"\n',
+            'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\nprobe = "rapida"\n',
             "tabela",
         ),
         # chave desconhecida na raiz — paridade com extra=forbid do mapa
         (
-            'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\n'
-            'chave_estranha = 1\n',
+            'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\nchave_estranha = 1\n',
             "desconhecidas",
         ),
         # chave desconhecida dentro de [probe]
         (
             'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\n'
-            '[probe]\ntimeout_s = 5\nestranha = true\n',
+            "[probe]\ntimeout_s = 5\nestranha = true\n",
             "desconhecidas",
         ),
         # booleano estrito — nada de bool("false")
@@ -310,9 +306,7 @@ def test_carregar_polidez_default_de_probe(tmp_path) -> None:
         ('off_peak = "22:00-06:00"\nuser_agent = "u"\n', "ausente"),
     ],
 )
-def test_carregar_polidez_recusa_configs_invalidas(
-    tmp_path, conteudo, fragmento_esperado
-) -> None:
+def test_carregar_polidez_recusa_configs_invalidas(tmp_path, conteudo, fragmento_esperado) -> None:
     caminho = tmp_path / "politeness.toml"
     caminho.write_text(conteudo, encoding="utf-8")
 

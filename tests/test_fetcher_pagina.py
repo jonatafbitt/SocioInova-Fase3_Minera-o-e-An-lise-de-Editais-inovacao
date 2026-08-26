@@ -72,7 +72,9 @@ def test_obter_html_estatico_retorna_pagina(servidor_fake) -> None:
 
 
 def test_obter_html_segue_redirect_e_reporta_url_final(servidor_fake) -> None:
-    servidor_fake.redirect_absoluto["/ponte"] = f"http://127.0.0.1:{servidor_fake.server_address[1]}/ok"
+    servidor_fake.redirect_absoluto["/ponte"] = (
+        f"http://127.0.0.1:{servidor_fake.server_address[1]}/ok"
+    )
 
     resultado = obter_html(
         url_do(servidor_fake, "/ponte"), _portal(url_do(servidor_fake)), _polidez()
@@ -90,7 +92,9 @@ def test_obter_html_rede_morta_vira_resultado_negativo_sem_crash(porta_morta) ->
     assert resultado.ok is False
     assert resultado.engine == "estatico"
     assert resultado.status_http is None
-    assert any(pista in (resultado.erro or "").lower() for pista in ("refused", "10061", "recusou"))
+    assert any(
+        pista in (resultado.erro or "").lower() for pista in ("refused", "10061", "recusou")
+    )
 
 
 # -- gatilho Playwright (FR-4): portal dinâmico OU conteúdo ausente ------------------
@@ -164,7 +168,9 @@ def test_falha_do_browser_vira_erro_de_evento_nao_crash(monkeypatch, servidor_fa
 
     monkeypatch.setattr(fetcher, "_obter_com_playwright", _engine_explodindo)
 
-    resultado = obter_html(url_do(servidor_fake), _portal(url_do(servidor_fake), dinamico=True), _polidez())
+    resultado = obter_html(
+        url_do(servidor_fake), _portal(url_do(servidor_fake), dinamico=True), _polidez()
+    )
 
     assert resultado.ok is False
     assert resultado.engine == "playwright"
@@ -240,14 +246,16 @@ def test_robots_inatingivel_rede_morta_permite(porta_morta) -> None:
 
 def test_robots_respeita_regras_por_user_agent(servidor_fake) -> None:
     servidor_fake.robots_txt = (
-        "User-agent: agente-editais\nDisallow: /pesquisa/\n"
-        "User-agent: *\nAllow: /\n"
+        "User-agent: agente-editais\nDisallow: /pesquisa/\nUser-agent: *\nAllow: /\n"
     )
     decisao = robots_para_host(url_do(servidor_fake), _polidez())
 
     assert decisao.acessivel is True
     assert decisao.pode_acessar(url_do(servidor_fake, "/livre"), "agente-editais/0.1 (+x)") is True
-    assert decisao.pode_acessar(url_do(servidor_fake, "/pesquisa/x"), "agente-editais/0.1 (+x)") is False
+    assert (
+        decisao.pode_acessar(url_do(servidor_fake, "/pesquisa/x"), "agente-editais/0.1 (+x)")
+        is False
+    )
 
 
 def test_delay_aplicado_entre_robots_e_pagina(servidor_fake) -> None:
@@ -272,7 +280,9 @@ def test_playwright_tambem_divide_o_balde_de_cortesia(monkeypatch, servidor_fake
     polidez = _polidez(delay_minimo_s=0.3)
 
     primeira = obter_html(url_do(servidor_fake), _portal(url_do(servidor_fake)), polidez)
-    segunda = obter_html(url_do(servidor_fake), _portal(url_do(servidor_fake), dinamico=True), polidez)
+    segunda = obter_html(
+        url_do(servidor_fake), _portal(url_do(servidor_fake), dinamico=True), polidez
+    )
 
     assert primeira.engine == "estatico" and segunda.engine == "playwright"
     tempos = [registro["quando"] for registro in servidor_fake.registros]
@@ -298,7 +308,9 @@ def test_crawl_delay_do_host_e_honrado(servidor_fake) -> None:
 def test_conteudo_nao_html_e_recusado_sem_baixar_corpo(servidor_fake) -> None:
     servidor_fake.paginas["/doc"] = (200, "application/pdf", b"%PDF-1.4 corpo-grande")
 
-    resultado = obter_html(url_do(servidor_fake, "/doc"), _portal(url_do(servidor_fake)), _polidez())
+    resultado = obter_html(
+        url_do(servidor_fake, "/doc"), _portal(url_do(servidor_fake)), _polidez()
+    )
 
     assert resultado.ok is False
     assert "nao-HTML" in (resultado.erro or "")
@@ -336,7 +348,9 @@ def test_redirect_para_origem_que_proibe_bloqueia_sem_pedir_alvo(
     porta_destino = destino.server_address[1]
     servidor_fake.redirect_absoluto["/ponte"] = f"http://127.0.0.1:{porta_destino}/alvo"
 
-    resultado = obter_html(url_do(servidor_fake, "/ponte"), _portal(url_do(servidor_fake)), _polidez())
+    resultado = obter_html(
+        url_do(servidor_fake, "/ponte"), _portal(url_do(servidor_fake)), _polidez()
+    )
 
     assert resultado.ok is False
     assert resultado.bloqueio_robots is True
@@ -393,9 +407,9 @@ def test_polidez_le_teto_de_paginas(tmp_path) -> None:
 @pytest.mark.parametrize(
     ("linha", "fragmento"),
     [
-        ('[crawl]\nmax_paginas_por_portal = 0\n', "inteiro positivo"),
-        ('[crawl]\nmax_paginas_por_portal = -3\n', "inteiro positivo"),
-        ('[crawl]\nmax_paginas_por_portal = true\n', "inteiro positivo"),
+        ("[crawl]\nmax_paginas_por_portal = 0\n", "inteiro positivo"),
+        ("[crawl]\nmax_paginas_por_portal = -3\n", "inteiro positivo"),
+        ("[crawl]\nmax_paginas_por_portal = true\n", "inteiro positivo"),
         ('[crawl]\nmax_paginas_por_portal = "muitas"\n', "inteiro positivo"),
     ],
 )
@@ -417,8 +431,7 @@ def test_polidez_recusa_teto_de_paginas_invalido(tmp_path, linha, fragmento) -> 
         # [crawl] precisa ser tabela
         'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\ncrawl = true\n',
         # chave desconhecida dentro de [crawl]
-        'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\n'
-        '[crawl]\nestranha = 1\n',
+        'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\n[crawl]\nestranha = 1\n',
         # booleano estrito em [crawl]
         'delay_minimo_s = 0\noff_peak = "22:00-06:00"\nuser_agent = "u"\n'
         '[crawl]\nrespeitar_janela_off_peak = "nao"\n',

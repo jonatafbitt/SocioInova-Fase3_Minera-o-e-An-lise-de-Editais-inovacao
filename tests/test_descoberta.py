@@ -123,7 +123,11 @@ def test_descobrir_persiste_secoes_e_candidato_pdf_e_dedupe_na_segunda_execucao(
         "</body></html>",
     )
     servidor_fake.paginas["/pdfs/edital-relativo.pdf"] = (200, "application/pdf", b"%PDF-fake")
-    servidor_fake.paginas["/pdfs/agente-inovacao-junior.pdf"] = (200, "application/pdf", b"%PDF-fake")
+    servidor_fake.paginas["/pdfs/agente-inovacao-junior.pdf"] = (
+        200,
+        "application/pdf",
+        b"%PDF-fake",
+    )
     escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
 
@@ -159,9 +163,7 @@ def test_descobrir_persiste_secoes_e_candidato_pdf_e_dedupe_na_segunda_execucao(
     assert "descobrir_concluido" in tipos
 
     pedidos_pagina_antes = [
-        registro["caminho"]
-        for registro in servidor_fake.registros
-        if registro["metodo"] == "GET"
+        registro["caminho"] for registro in servidor_fake.registros if registro["metodo"] == "GET"
     ]
 
     segunda = cli.invoke(app, ["descobrir", "--todos"])
@@ -177,9 +179,7 @@ def test_descobrir_persiste_secoes_e_candidato_pdf_e_dedupe_na_segunda_execucao(
         assert manifesto.contar_candidatos() == 2, "dedupe por URL normalizada"
 
     pedidos_pagina_depois = [
-        registro["caminho"]
-        for registro in servidor_fake.registros
-        if registro["metodo"] == "GET"
+        registro["caminho"] for registro in servidor_fake.registros if registro["metodo"] == "GET"
     ]
     assert pedidos_pagina_depois[: len(pedidos_pagina_antes)] == pedidos_pagina_antes
 
@@ -212,9 +212,9 @@ def test_portal_dinamico_usa_playwright_sem_tentativa_estatica(
     saida = resultado.output + (resultado.stderr or "")
     assert "Playwright: 1 uso(s)" in saida
     assert "portal_dinamico=1" in saida
-    assert "/ok" not in [
-        registro["caminho"] for registro in servidor_fake.registros
-    ], "nenhuma tentativa estática"
+    assert "/ok" not in [registro["caminho"] for registro in servidor_fake.registros], (
+        "nenhuma tentativa estática"
+    )
     assert chamadas == [url_do(servidor_fake)]
 
     eventos = _tipos_eventos(politeness_veloz.manifesto)
@@ -295,7 +295,9 @@ def test_robots_bloqueio_pula_o_caminho_antes_da_requisicao(
     assert any(tipo == "candidato_encontrado" for tipo, _ in eventos), "lote segue após bloqueio"
 
 
-def test_robots_por_origem_da_url_consultada(cli, politeness_veloz, servidor_fake, criar_servidor_fake):
+def test_robots_por_origem_da_url_consultada(
+    cli, politeness_veloz, servidor_fake, criar_servidor_fake
+):
     """Mesmo hostname, porta diferente = origem DIFERENTE — consulta o próprio robots."""
     outro = criar_servidor_fake()
     outro.robots_txt = "User-agent: *\nDisallow: /\n"
@@ -369,7 +371,11 @@ def test_http_404_no_meio_da_navegacao_vira_falha_sem_persistir_visita(
         "text/html; charset=utf-8",
         "<html><body><a href='/quebrada'>Programa de Inovação</a></body></html>",
     )
-    servidor_fake.paginas["/quebrada"] = (404, "text/html; charset=utf-8", "<html><body>sumiu</body></html>")
+    servidor_fake.paginas["/quebrada"] = (
+        404,
+        "text/html; charset=utf-8",
+        "<html><body>sumiu</body></html>",
+    )
     escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
 
@@ -495,20 +501,19 @@ def test_redirect_301_resolve_links_contra_url_final_e_alias_persiste(
     servidor_fake.paginas["/ok"] = (
         200,
         "text/html; charset=utf-8",
-        "<html><body><p>Agência de Inovação</p>"
-        "<a href='docs/x.pdf'>documento</a></body></html>",
+        "<html><body><p>Agência de Inovação</p><a href='docs/x.pdf'>documento</a></body></html>",
     )
     servidor_fake.paginas["/docs/x.pdf"] = (200, "application/pdf", b"%PDF-fake")
-    escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake, seeds=[url_do(servidor_fake, "/movido")]))
+    escrever_mapa(
+        politeness_veloz, _mapa_portal(servidor_fake, seeds=[url_do(servidor_fake, "/movido")])
+    )
     assert cli.invoke(app, ["mapa", "validar"]).exit_code == 0
 
     primeira = cli.invoke(app, ["descobrir", "--portal", "TST"])
 
     assert primeira.exit_code == 0, primeira.output
     with Manifesto(politeness_veloz.manifesto) as manifesto:
-        candidatos = [
-            linha["url"] for linha in manifesto.consultar("SELECT url FROM candidatos")
-        ]
+        candidatos = [linha["url"] for linha in manifesto.consultar("SELECT url FROM candidatos")]
         secoes = {
             linha["url"]: linha["profundidade"]
             for linha in manifesto.consultar("SELECT url, profundidade FROM secoes_visitadas")
@@ -689,9 +694,7 @@ def test_sigla_desconhecida_sai_1_listando_siglas(cli, politeness_veloz, servido
     assert "XXX" in saida and "TST" in saida
 
 
-def test_portal_fora_do_manifesto_pedemapa_validar(
-    cli, politeness_veloz, servidor_fake
-) -> None:
+def test_portal_fora_do_manifesto_pedemapa_validar(cli, politeness_veloz, servidor_fake) -> None:
     escrever_mapa(politeness_veloz, _mapa_portal(servidor_fake))
     # sem 'mapa validar': Manifesto recém-criado não conhece o portal
     resultado = cli.invoke(app, ["descobrir", "--portal", "TST"])

@@ -50,9 +50,9 @@ import typer
 
 from . import __version__, llm_adapter
 from .analise import (
+    PROMPT_VERSAO,
     ContextoAnalise,
     ResumoAnalisePortal,
-    PROMPT_VERSAO,
     analisar_portal,
     montar_prompt_sistema,
 )
@@ -280,9 +280,7 @@ def preflight() -> None:
     try:
         with uso_manifesto() as manifesto:
 
-            def _registrar_seed(
-                indice: int, _total: int, resultado: ResultadoSeed
-            ) -> None:
+            def _registrar_seed(indice: int, _total: int, resultado: ResultadoSeed) -> None:
                 nonlocal sondadas
                 sondadas = indice
                 if resultado.ok:
@@ -340,7 +338,7 @@ def preflight() -> None:
                                 "politeness_sha256": politeness_sha256,
                             },
                         )
-                    except Exception:  # noqa: BLE001 — não mascarar a causa original
+                    except Exception:
                         pass
     except ViolacaoPolidez as exc:
         typer.echo(f"ERRO: {exc}", err=True)
@@ -466,9 +464,7 @@ def descobrir(
 
             with nova_sessao(polidez.user_agent) as sessao:
                 for contexto in contextos:
-                    resumos.append(
-                        navegar_portal(contexto, manifesto, polidez, sessao=sessao)
-                    )
+                    resumos.append(navegar_portal(contexto, manifesto, polidez, sessao=sessao))
             manifesto.registrar_evento(
                 tipo="descobrir_concluido",
                 comando="descobrir",
@@ -495,9 +491,7 @@ def descobrir(
                         )
                     },
                     "cortes_por_teto": sum(1 for r in resumos if r.corte_por_teto),
-                    "urls_perdidas": [
-                        url for resumo in resumos for url in resumo.urls_perdidas
-                    ],
+                    "urls_perdidas": [url for resumo in resumos for url in resumo.urls_perdidas],
                 },
             )
     except ViolacaoPolidez as exc:
@@ -688,9 +682,7 @@ def coletar(
                     "hosts_suspensos": [
                         host for resumo in resumos for host in resumo.hosts_suspensos
                     ],
-                    "urls_perdidas": [
-                        url for resumo in resumos for url in resumo.urls_perdidas
-                    ],
+                    "urls_perdidas": [url for resumo in resumos for url in resumo.urls_perdidas],
                 },
             )
     except ViolacaoPolidez as exc:
@@ -724,18 +716,14 @@ def coletar(
                 "restante DO HOST é pulado nesta execução; tenta de novo na próxima."
             )
         if resumo.puladas_host_suspenso:
-            typer.echo(
-                f"  Puladas por suspensão de host: {resumo.puladas_host_suspenso}"
-            )
+            typer.echo(f"  Puladas por suspensão de host: {resumo.puladas_host_suspenso}")
         for perdida in resumo.urls_perdidas:
             typer.echo(f"  Perdida:    {perdida}")
 
     total_baixados = sum(r.baixados + r.novas_versoes + r.restaurados for r in resumos)
     typer.echo("")
     if total_puladas_suspensao:
-        typer.echo(
-            f"URLs puladas por suspensão de host nesta execução: {total_puladas_suspensao}"
-        )
+        typer.echo(f"URLs puladas por suspensão de host nesta execução: {total_puladas_suspensao}")
     typer.echo(
         f"Coleta concluída: {len(resumos)} portal(is), {total_baixados} documento(s) "
         f"gravados em {raiz_corpus} "
@@ -817,9 +805,7 @@ def textuar(
             raise typer.Exit(code=1)
 
         for contexto in contextos:
-            resumos.append(
-                textuar_portal(contexto, manifesto, limiar, comando="textuar")
-            )
+            resumos.append(textuar_portal(contexto, manifesto, limiar, comando="textuar"))
         # computado UMA vez: payload do evento e eco CLI compartilham o mesmo dict
         totais = {
             chave: sum(getattr(resumo, chave) for resumo in resumos)
@@ -835,9 +821,7 @@ def textuar(
                 "politeness_sha256": politeness_sha256,
                 "limiar_chars_por_pagina": limiar,
                 "totais": totais,
-                "urls_perdidas": [
-                    url for resumo in resumos for url in resumo.urls_perdidas
-                ],
+                "urls_perdidas": [url for resumo in resumos for url in resumo.urls_perdidas],
             },
         )
 
@@ -949,9 +933,7 @@ def datar(
                 "alvo": "--todos" if todos else alvo,
                 "mapa_sha256": mapa_sha256,
                 "totais": totais,
-                "urls_perdidas": [
-                    url for resumo in resumos for url in resumo.urls_perdidas
-                ],
+                "urls_perdidas": [url for resumo in resumos for url in resumo.urls_perdidas],
             },
         )
 
@@ -1177,9 +1159,7 @@ def analise(
                 "mapa_sha256": mapa_sha256,
                 "totais": totais,
                 "editais_perdidos": [
-                    edital
-                    for resumo in resumos
-                    for edital in resumo.editais_perdidos
+                    edital for resumo in resumos for edital in resumo.editais_perdidos
                 ],
             },
         )
@@ -1193,9 +1173,7 @@ def analise(
             f"excluídos: {resumo.excluidos})"
         )
         if resumo.escaneados_sem_ocr:
-            typer.echo(
-                f"  Documentos escaneados pulados (sem OCR): {resumo.escaneados_sem_ocr}"
-            )
+            typer.echo(f"  Documentos escaneados pulados (sem OCR): {resumo.escaneados_sem_ocr}")
         for perdido in resumo.editais_perdidos:
             typer.echo(f"  Perdido:    {perdido}")
 
@@ -1227,8 +1205,7 @@ def fila_listar(
     status_normalizado = status.strip().lower()
     if status_normalizado not in (*_STATUS_FILA, "todas"):
         typer.echo(
-            "ERRO: --status deve ser 'pendente', 'resolvida' ou 'todas' "
-            f"(recebido {status!r}).",
+            f"ERRO: --status deve ser 'pendente', 'resolvida' ou 'todas' (recebido {status!r}).",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -1273,8 +1250,7 @@ def fila_listar(
                     else ""
                 )
                 typer.echo(
-                    f"    Decisão: {destino} por {item['autor']} em "
-                    f"{item['decidido_em']}{anexa}"
+                    f"    Decisão: {destino} por {item['autor']} em {item['decidido_em']}{anexa}"
                 )
                 typer.echo(f"      Justificativa: {item['justificativa']}")
 
@@ -1282,18 +1258,14 @@ def fila_listar(
 @fila_app.command("decidir")
 def fila_decidir(
     id: int = typer.Option(None, "--id", help="Id do item pendente na fila."),
-    ano: int = typer.Option(
-        None, "--ano", help="Ano atribuído ao documento (2019–2026)."
-    ),
+    ano: int = typer.Option(None, "--ano", help="Ano atribuído ao documento (2019–2026)."),
     excluir: bool = typer.Option(
         False, "--excluir", help="Marca o documento como EXCLUÍDO do corpus."
     ),
     justificativa: str = typer.Option(
         None, "--justificativa", help="Justificativa textual OBRIGATÓRIA (FR-8)."
     ),
-    autor: str = typer.Option(
-        None, "--autor", help="Autoria da decisão (obrigatória, FR-8)."
-    ),
+    autor: str = typer.Option(None, "--autor", help="Autoria da decisão (obrigatória, FR-8)."),
     evidencia: str = typer.Option(
         None, "--evidencia", help="Referência opcional da evidência consultada."
     ),
@@ -1322,9 +1294,7 @@ def fila_decidir(
         )
 
     with uso_manifesto() as manifesto:
-        linhas = manifesto.consultar(
-            "SELECT * FROM fila_revisao WHERE id = ?", (id,)
-        )
+        linhas = manifesto.consultar("SELECT * FROM fila_revisao WHERE id = ?", (id,))
         if not linhas:
             typer.echo(f"ERRO: item de fila #{id} não existe.", err=True)
             raise typer.Exit(code=1)
@@ -1388,12 +1358,6 @@ _COLUNAS_CSV: tuple[str, ...] = (
 )
 
 _ERROS_DE_ESCRITA = (OSError, UnicodeEncodeError, csv.Error)
-
-
-def _recusar_flag(mensagem: str) -> None:
-    """Flag malformada: recusa ANTES de abrir o banco (exit 2)."""
-    typer.echo(f"ERRO: {mensagem}", err=True)
-    raise typer.Exit(code=2)
 
 
 def _recusar_saida_no_manifesto(saida: Path | None) -> None:
@@ -1489,8 +1453,7 @@ def consultar(
         _recusar_flag(f"--ano {ano} está fora da janela fixa 2019–2026.")
     if categoria is not None and categoria.strip() not in CATEGORIAS:
         _recusar_flag(
-            "--categoria deve ser uma de: "
-            f"{', '.join(CATEGORIAS)} (recebido {categoria!r})."
+            f"--categoria deve ser uma de: {', '.join(CATEGORIAS)} (recebido {categoria!r})."
         )
     _recusar_saida_no_manifesto(saida)
 
@@ -1546,9 +1509,7 @@ def consultar(
                     escritor_csv = csv.DictWriter(arquivo, fieldnames=list(_COLUNAS_CSV))
                     escritor_csv.writeheader()
                     for linha in linhas:
-                        escritor_csv.writerow(
-                            {coluna: linha[coluna] for coluna in _COLUNAS_CSV}
-                        )
+                        escritor_csv.writerow({coluna: linha[coluna] for coluna in _COLUNAS_CSV})
             except _ERROS_DE_ESCRITA as exc:
                 # evento honesto: o log registra a FALHA antes do exit 1
                 manifesto.registrar_evento(
@@ -1666,7 +1627,9 @@ def status() -> None:
 
     with uso_manifesto() as manifesto:
         typer.echo(f"Manifesto:       {caminho}")
-        typer.echo(f"SQLite engine:   {sqlite3.sqlite_version} (guard ≥ {'.'.join(map(str, ENGINE_MINIMA))})")
+        typer.echo(
+            f"SQLite engine:   {sqlite3.sqlite_version} (guard ≥ {'.'.join(map(str, ENGINE_MINIMA))})"
+        )
         typer.echo(f"Schema version:  {manifesto.schema_version()}")
         typer.echo(f"Instituições:    {manifesto.contar_instituicoes()}")
         typer.echo(f"Portais:         {manifesto.contar_portais()}")
@@ -1692,14 +1655,16 @@ def status() -> None:
         if not eventos:
             typer.echo("  (nenhum evento registrado)")
         for evento in reversed(eventos):
-            typer.echo(f"  #{evento['id']} {evento['ts']} [{evento['comando']}] {evento['tipo']} {evento['detalhe']}")
+            typer.echo(
+                f"  #{evento['id']} {evento['ts']} [{evento['comando']}] {evento['tipo']} {evento['detalhe']}"
+            )
 
 
 def main() -> None:
     for fluxo in (sys.stdout, sys.stderr):
         try:
             fluxo.reconfigure(encoding="utf-8", errors="replace")  # PYTHONUTF8=1 na prática
-        except Exception:  # noqa: BLE001 — stream sem reconfigure (ex.: capturas de teste)
+        except Exception:
             pass
     app()
 

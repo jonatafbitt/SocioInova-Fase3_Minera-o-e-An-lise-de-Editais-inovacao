@@ -31,8 +31,8 @@ import requests
 from bs4 import BeautifulSoup
 
 from .fetcher import DecisaoRobots, Polidez, nova_sessao, obter_html, robots_para_host
-from .mapa import Portal, hostname_de, normalizar_url
 from .manifest import Manifesto
+from .mapa import Portal, hostname_de, normalizar_url
 
 PALAVRAS_CHAVE_SECAO: tuple[str, ...] = (
     "Inovação",
@@ -336,14 +336,10 @@ def _navegar(
 
         # persiste pela URL FINAL (e pelo alias pedido): redirects 301 não
         # refetcam na próxima execução; dedupe/consulta ficam estáveis
-        manifesto.registrar_secao_visitada(
-            contexto.portal_id, url, profundidade
-        )
+        manifesto.registrar_secao_visitada(contexto.portal_id, url, profundidade)
         url_final = normalizar_segura(resultado.url_final, url)
         if url_final != url:
-            manifesto.registrar_secao_visitada(
-                contexto.portal_id, url_final, profundidade
-            )
+            manifesto.registrar_secao_visitada(contexto.portal_id, url_final, profundidade)
             planejadas.add(url_final)
         resumo.secoes_visitadas += 1
         manifesto.registrar_evento(

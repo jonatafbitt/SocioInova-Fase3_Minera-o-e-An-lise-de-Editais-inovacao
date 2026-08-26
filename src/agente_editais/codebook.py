@@ -101,9 +101,7 @@ class TrieticaDahlin(BaseModel):
     @model_validator(mode="after")
     def _decisao_coerente(self) -> "TrieticaDahlin":
         decisao = self.decisao.strip() if isinstance(self.decisao, str) else None
-        justificativa = (
-            self.justificativa.strip() if isinstance(self.justificativa, str) else None
-        )
+        justificativa = self.justificativa.strip() if isinstance(self.justificativa, str) else None
         decisao = decisao or None
         justificativa = justificativa or None
         if self.resolvida and decisao not in DECISOES_DAHLIN:
@@ -114,9 +112,7 @@ class TrieticaDahlin(BaseModel):
         # exclusão precisa estar JUSTIFICADA EM ALGUM LUGAR — mesmo quando a
         # resolução ainda não foi marcada (estado intermediário de preenchimento)
         if decisao == "excluida_justificada" and not justificativa:
-            raise ValueError(
-                "decisao 'excluida_justificada' exige 'justificativa' não vazia"
-            )
+            raise ValueError("decisao 'excluida_justificada' exige 'justificativa' não vazia")
         if not self.resolvida and not justificativa:
             raise ValueError(
                 "trietica_dahlin não resolvida exige 'justificativa' registrando "
@@ -169,13 +165,9 @@ class Campo(BaseModel):
     def _escala_consistente(self) -> "Campo":
         if self.escala == "ordinal":
             if not self.valores:
-                raise ValueError(
-                    f"campo ordinal '{self.id}' exige 'valores' (ex.: [0, 1, 2])"
-                )
+                raise ValueError(f"campo ordinal '{self.id}' exige 'valores' (ex.: [0, 1, 2])")
             if len(set(self.valores)) != len(self.valores):
-                raise ValueError(
-                    f"campo ordinal '{self.id}' tem valores repetidos em 'valores'"
-                )
+                raise ValueError(f"campo ordinal '{self.id}' tem valores repetidos em 'valores'")
             if any(isinstance(v, bool) for v in self.valores):
                 raise ValueError(f"campo ordinal '{self.id}' aceita apenas inteiros")
             if self.opcoes is not None:
@@ -184,13 +176,9 @@ class Campo(BaseModel):
                 )
         else:
             if not self.opcoes or any(not o.strip() for o in self.opcoes):
-                raise ValueError(
-                    f"campo nominal '{self.id}' exige 'opcoes' não vazias"
-                )
+                raise ValueError(f"campo nominal '{self.id}' exige 'opcoes' não vazias")
             if len(set(self.opcoes)) != len(self.opcoes):
-                raise ValueError(
-                    f"campo nominal '{self.id}' tem opções repetidas em 'opcoes'"
-                )
+                raise ValueError(f"campo nominal '{self.id}' tem opções repetidas em 'opcoes'")
             if self.valores is not None:
                 raise ValueError(
                     f"campo nominal '{self.id}' não usa 'valores' (isso é de escala ordinal)"
@@ -274,7 +262,7 @@ class Codebook(BaseModel):
 
 
 def _formatar_localizacao(loc: tuple) -> str:
-    pedacos = []
+    pedacos: list[str] = []
     for parte in loc:
         if isinstance(parte, int):
             pedacos[-1] += f"[{parte}]"
@@ -289,9 +277,7 @@ def _linhas_com(texto: str, trecho: str) -> list[int]:
 
 def _linhas_do_valor(texto: str, valor: object) -> list[int]:
     """Localiza o valor como escalar YAML entre aspas; cai para busca solta."""
-    exatas = [
-        n for n, linha in enumerate(texto.splitlines(), start=1) if f"'{valor}'" in linha
-    ]
+    exatas = [n for n, linha in enumerate(texto.splitlines(), start=1) if f"'{valor}'" in linha]
     return exatas if exatas else _linhas_com(texto, str(valor))
 
 
@@ -351,9 +337,7 @@ def carregar_codebook_de_bytes(conteudo: bytes, caminho: Path) -> Codebook:
     try:
         texto_bruto = conteudo.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ErroCodebook(
-            [f"{caminho}: o conteúdo não é UTF-8 válido ({exc})."]
-        ) from exc
+        raise ErroCodebook([f"{caminho}: o conteúdo não é UTF-8 válido ({exc})."]) from exc
 
     try:
         dados = yaml.safe_load(texto_bruto)
@@ -367,8 +351,10 @@ def carregar_codebook_de_bytes(conteudo: bytes, caminho: Path) -> Codebook:
 
     if not isinstance(dados, dict):
         raise ErroCodebook(
-            [f"{caminho}: o conteúdo raiz deve ser um mapeamento YAML "
-             f"(recebido {type(dados).__name__})."]
+            [
+                f"{caminho}: o conteúdo raiz deve ser um mapeamento YAML "
+                f"(recebido {type(dados).__name__})."
+            ]
         )
 
     try:
@@ -389,9 +375,9 @@ def carregar_codebook_de_bytes(conteudo: bytes, caminho: Path) -> Codebook:
                 candidatos.append(str(erro["loc"][-1]))
             linhas: list[int] = []
             for candidato in candidatos:
-                achou = _linhas_do_valor(texto_bruto, candidato)
-                if achou and (not linhas or len(achou) < len(linhas)):
-                    linhas = achou
+                achou_linhas: list[int] = _linhas_do_valor(texto_bruto, candidato)
+                if achou_linhas and (not linhas or len(achou_linhas) < len(linhas)):
+                    linhas = achou_linhas
             onde = f", linha {_linhas_formatadas(linhas)}" if linhas else ""
             problemas.append(
                 f"{caminho}{onde}: campo '{local}' — {erro['msg']}"
@@ -409,9 +395,7 @@ def carregar_codebook(caminho: Path) -> Codebook:
     try:
         conteudo = caminho.read_bytes()
     except OSError as exc:
-        raise ErroCodebook(
-            [f"{caminho}: não foi possível ler o arquivo ({exc})."]
-        ) from exc
+        raise ErroCodebook([f"{caminho}: não foi possível ler o arquivo ({exc})."]) from exc
     return carregar_codebook_de_bytes(conteudo, caminho)
 
 

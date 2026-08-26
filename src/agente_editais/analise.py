@@ -46,8 +46,8 @@ import yaml
 
 from . import llm_adapter
 from .codebook import Campo, Codebook
-from .mapa import Portal
 from .manifest import Manifesto
+from .mapa import Portal
 
 PROMPT_VERSAO = "l2-catalogacao-v1"
 SENTINELA_NA = "N/A"
@@ -253,8 +253,7 @@ def validar_saida(
     chaves_raiz = set(objeto)
     if chaves_raiz != {"campos"}:
         problemas.append(
-            f"raiz deve ter exatamente a chave 'campos' (recebido: "
-            f"{sorted(chaves_raiz)})"
+            f"raiz deve ter exatamente a chave 'campos' (recebido: {sorted(chaves_raiz)})"
         )
         raise SaidaInvalida("; ".join(problemas))
     campos_recebidos = objeto["campos"]
@@ -282,8 +281,7 @@ def validar_saida(
         chaves = set(item)
         if not chaves <= _CHAVES_CITACAO:
             problemas.append(
-                f"'{campo.id}': chaves desconhecidas "
-                f"{sorted(chaves - _CHAVES_CITACAO)}"
+                f"'{campo.id}': chaves desconhecidas {sorted(chaves - _CHAVES_CITACAO)}"
             )
         if "valor" not in chaves:
             problemas.append(f"'{campo.id}': 'valor' ausente")
@@ -291,16 +289,14 @@ def validar_saida(
         valor = item["valor"]
         if not campo.valor_valido(valor):
             problemas.append(
-                f"'{campo.id}': valor {valor!r} fora da escala "
-                f"({_escala_descritiva(campo)})"
+                f"'{campo.id}': valor {valor!r} fora da escala ({_escala_descritiva(campo)})"
             )
             continue
         if valor == SENTINELA_NA:
             for chave in ("citacao_documento", "citacao_trecho"):
                 if item.get(chave) is not None:
                     problemas.append(
-                        f"'{campo.id}': '{chave}' deve ser null quando o valor "
-                        f"é {SENTINELA_NA}"
+                        f"'{campo.id}': '{chave}' deve ser null quando o valor é {SENTINELA_NA}"
                     )
             registros.append(
                 {
@@ -375,9 +371,7 @@ def _texto_vigente(documento: sqlite3.Row) -> Path | None:
     return txt
 
 
-def _montar_entrada(
-    documentos: list[sqlite3.Row], textos: dict[str, str]
-) -> str:
+def _montar_entrada(documentos: list[sqlite3.Row], textos: dict[str, str]) -> str:
     """Textos dos documentos em UMA mensagem, precedência cronológica (FR-17)."""
     secoes = [
         f"=== DOCUMENTO {documento['id']} ===\n{textos[documento['id']]}"
@@ -601,9 +595,7 @@ def analisar_edital(
             "tentativas_usadas": usadas,
         },
     )
-    return DesfechoAnalise(
-        "codificado", escaneados_pulados=escaneados_pulados
-    )
+    return DesfechoAnalise("codificado", escaneados_pulados=escaneados_pulados)
 
 
 def analisar_portal(
@@ -663,9 +655,7 @@ def analisar_portal(
             resumo.erros += 1
             resumo.editais_perdidos.append(edital_id)
         else:
-            raise AssertionError(
-                f"desfecho de análise desconhecido: {desfecho.desfecho!r}"
-            )
+            raise AssertionError(f"desfecho de análise desconhecido: {desfecho.desfecho!r}")
 
     manifesto.registrar_evento(
         tipo="analise_portal_concluida",
