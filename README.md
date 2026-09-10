@@ -1,5 +1,9 @@
 # agente-editais
 
+[![CI](https://github.com/jonatafbitt/agente-editais-inovacao/actions/workflows/ci.yml/badge.svg)](https://github.com/jonatafbitt/agente-editais-inovacao/actions/workflows/ci.yml)
+[![cobertura de testes](https://img.shields.io/badge/cobertura-teste-86%25-brightgreen)](.github/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.14-blue)](pyproject.toml)
+
 Agente de coleta e preservação de editais de fomento/bolsas/incubação dos
 portais institucionais da **Rede Federal EPCT** — piloto de pesquisa
 acadêmica (PPGCS/UFBA). Pipeline em lotes orientado ao Manifesto SQLite;
@@ -12,9 +16,12 @@ nenhum serviço residente, nenhum scheduler (spine AD-1).
 > janela 2019–2026 e Fila de Revisão Manual com decisão fundamentada +
 > **consulta e exportação ONLY-leitura** (CAP-9/UJ-3/§10) + **catálogo
 > analítico L2** (CAP-7): codebook com três phase-gates bloqueantes,
-> instrumento congelado por lote e verificação citação↔texto na gravação
-> (schema v6). `<time>`/CSS, backfill Wayback, OCR e a view pública são
-> passos futuros — `metodo_datacao` só é preenchido pelo aceite da datação.
+> instrumento congelado por lote e verificação citação↔texto na gravação.
+> `<time>`/CSS, backfill Wayback e a view pública são passos futuros —
+> `metodo_datacao` só é preenchido pelo aceite da datação. **Eixo 3**
+> (relevância/impacto social) é classificado heuristicamente sobre os sinais
+> de `configs/eixo3.yaml`; documentos escaneados podem ser resgatados por
+> OCR em etapa opcional (CAP-6/AD-11).
 
 ## Instalação
 

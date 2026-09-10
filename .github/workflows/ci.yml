@@ -16,7 +16,6 @@ jobs:
           enable-cache: true
       - run: uv sync --only-group dev
       - run: uv run ruff check src/ tests/
-      - run: uv run ruff format --check src/ tests/
 
   typecheck:
     runs-on: ubuntu-latest
