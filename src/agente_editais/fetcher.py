@@ -88,6 +88,11 @@ class Polidez(BaseModel):
     # flag_escaneado=true. Vive em politeness.toml ([texto]) como todo knob
     # declarativo versionado (AD-9).
     texto_limiar_chars_por_pagina: int = Field(default=100, gt=0)
+    # Fase 3.1 (resgate por OCR): confiança mínima por página (0..100) para
+    # aceitar o texto óptico e idioma do tesseract (pack 'por'). Apimentam o
+    # estágio OCR opcional; o empirical default (60/por) cobre os editais IF.
+    texto_ocr_confianca_minima: int = Field(default=60, ge=0, le=100)
+    texto_ocr_lang: str = Field(default="por", min_length=1)
 
     @field_validator("off_peak")
     @classmethod
@@ -106,7 +111,7 @@ _CHAVES_CRAWL = (
     "download_timeout_s",
     "max_403_consecutivos",
 )
-_CHAVES_TEXTO = ("limiar_chars_por_pagina",)
+_CHAVES_TEXTO = ("limiar_chars_por_pagina", "ocr_confianca_minima", "ocr_lang")
 
 
 def _numero_positivo(caminho: Path, campo: str, valor: object) -> float:
@@ -238,6 +243,18 @@ def carregar_polidez(caminho: Path) -> Polidez:
             f"{caminho}: 'texto.limiar_chars_por_pagina' exige inteiro positivo, "
             f"recebido {limiar!r}."
         )
+    ocr_confianca = texto_bruto.get("ocr_confianca_minima", 60)
+    if isinstance(ocr_confianca, bool) or not isinstance(ocr_confianca, int) or not 0 <= ocr_confianca <= 100:
+        raise ErroConfigPolidez(
+            f"{caminho}: 'texto.ocr_confianca_minima' exige inteiro 0..100, "
+            f"recebido {ocr_confianca!r}."
+        )
+    ocr_lang = texto_bruto.get("ocr_lang", "por")
+    if not isinstance(ocr_lang, str) or not ocr_lang.strip():
+        raise ErroConfigPolidez(
+            f"{caminho}: 'texto.ocr_lang' exige idioma do tesseract (ex.: 'por'), "
+            f"recebido {ocr_lang!r}."
+        )
 
     try:
         return Polidez(
@@ -257,6 +274,8 @@ def carregar_polidez(caminho: Path) -> Polidez:
             download_timeout_s=float(timeout_leitura),
             max_403_consecutivos=max_403,
             texto_limiar_chars_por_pagina=limiar,
+            texto_ocr_confianca_minima=ocr_confianca,
+            texto_ocr_lang=ocr_lang,
         )
     except ValueError as exc:
         raise ErroConfigPolidez(f"{caminho}: valor inválido — {exc}") from exc

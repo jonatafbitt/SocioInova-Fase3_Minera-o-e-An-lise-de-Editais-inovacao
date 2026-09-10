@@ -2,25 +2,32 @@
 
 Subcomandos desta story: ``mapa validar``, ``preflight``, ``descobrir``,
 ``coletar``, ``textuar``, ``datar``, ``fila listar|decidir``, ``consultar``,
-``custodia``, ``analise`` e ``status``.
+``custodia``, ``analise``, ``varredura adicionar|listar|rodar``,
+``classificar``, ``classificar_eixo3``, ``eixo3_status`` e ``status``.
 
 Códigos de saída:
 - 0  sucesso (inclusive pré-voo com seeds inacessíveis, descoberta, coleta,
        textuação, datação e ANÁLISE com falhas por portal/edital/documento —
        o lote segue, FR-2/CAP-4/CAP-6/CAP-3/CAP-7; ``consultar``/``custodia``
-       com zero resultados);
+       com zero resultados; ``varredura rodar`` com falhas por rodada —
+       registradas como 'falhou' no Manifesto; ``classificar`` com zero
+       documentos elegíveis);
 - 1  erro operacional genérico: Manifesto inexistente no ``status``/
        ``consultar``/``custodia``, Manifesto mais novo que o agente, falha de
        abertura do banco, violação de janela off-peak (pré-voo exigente OU
-       crawling), sigla desconhecida no ``descobrir``/``coletar``/``textuar``/
-       ``datar``/``analise`` ou portal ausente do Manifesto; item de fila
+       crawling), varredura FORA da janela off-peak (fica 'pendente' —
+       Ask-First; o erro aponta o coleta_complementar.bat) ou ``--id`` inexistente
+       no ``varredura rodar``, sigla desconhecida no ``descobrir``/``coletar``/
+       ``textuar``/``datar``/``analise`` ou portal ausente do Manifesto; item de fila
        inexistente ou já resolvido no ``fila decidir``; edital inexistente no
-       ``custodia``; falha de escrita do CSV/JSON no ``consultar``/
-       ``custodia``;
-- 2  configuração declarativa inválida — compartilhado entre mapa-mestre.toml,
-       politeness.toml e CODEBOOK.YAML (nada é escrito; banco intocado) —
-       inclui os PHASE-GATES do L2 (congelamento/Dahlin/κ ausentes no
-       codebook.yaml, AD-6; o ``analise`` recusa ANTES de tocar o provedor)
+       ``custodia``; documento sem linha no Manifesto (ou já excluído pela
+       curadoria) no ``classificar --documento``; falha de escrita do CSV/JSON
+       no ``consultar``/``custodia``;
+- 2  configuração declarativa inválida — compartilhada entre mapa-mestre.toml,
+       politeness.toml, CODEBOOK.YAML, ``sinais_inovacao.yaml``,
+       ``sinais_analiticos.yaml`` e ``eixo3.yaml`` (nada é escrito; banco
+       intocado) — inclui os PHASE-GATES do L2 (congelamento/Dahlin/κ ausentes
+       no codebook.yaml, AD-6; o ``analise`` recusa ANTES de tocar o provedor)
        — ou flags malformadas: --portal/--todos dos comandos de lote, decisão
        inválida no ``fila decidir`` (sem justificativa/autoria, destino
        ausente ou duplo, ano fora da janela 2019–2026), ``--status`` inválido
@@ -29,7 +36,12 @@ Códigos de saída:
        de 2019–2026), ``--edital`` vazio no ``custodia`` e flags do
        ``analise`` (--modelo/LLM_MODELO ausente, --temperatura fora de
        [0, 2], --tentativas < 1) — todos validados ANTES de abrir o banco;
-       ``--saida`` apontando para o próprio Manifesto no
+       ``varredura adicionar`` com URL malformada/não-http(s) ou host sem
+       portal no Mapa-Mestre (recusa TUDO, exit 2, listando os hosts
+       conhecidos — NUNCA auto-registra portal, Ask-First); flags do
+       ``classificar`` e ``classificar_eixo3`` (exatamente um de
+       --portal/--todos/--documento, nenhum vazio) — todos validados ANTES
+       de abrir o banco; ``--saida`` apontando para o próprio Manifesto no
        ``consultar``/``custodia`` (o export truncaria o banco);
 - 3  engine SQLite abaixo do guard AD-10;
 - 4  Manifesto ocupado por outro processo (lock AD-3, no startup OU na gravação).
@@ -43,8 +55,10 @@ import os
 import sqlite3
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlparse
 
 import typer
 
@@ -56,10 +70,28 @@ from .analise import (
     analisar_portal,
     montar_prompt_sistema,
 )
+from .classificacao import (
+    ErroClassificacao,
+    ErroConfigSinais,
+    ResumoClassificacao,
+    carregar_sinais,
+    classificar_documento,
+    classificar_portal,
+)
 from .codebook import Codebook, ErroCodebook, carregar_codebook_de_bytes, hash_de_bytes
 from .coleta import ContextoColeta, ResumoColetaPortal, coletar_portal, limpar_temporarios
 from .datacao import ContextoDatacao, ResumoDatacaoPortal, datar_portal
 from .descoberta import ContextoPortal, ResumoPortal, navegar_portal
+from .eixo3 import (
+    ConfigEixo3,
+    ErroConfigEixo3,
+)
+from .eixo3 import (
+    carregar_config as carregar_config_eixo3,
+)
+from .eixo3 import (
+    classificar_eixo3 as classificar_eixo3_fn,
+)
 from .fetcher import (
     ErroConfigPolidez,
     Polidez,
@@ -82,12 +114,28 @@ from .manifest import (
 from .mapa import (
     CATEGORIAS,
     ErroMapa,
+    Instituicao,
     MapaMestre,
+    Portal,
     carregar_mapa,
     hash_arquivo,
+    hostname_de,
+    normalizar_url,
     sincronizar_mapa,
 )
-from .texto import ContextoTexto, ResumoTextoPortal, textuar_portal
+from .texto import (
+    ContextoTexto,
+    ResumoOcrPortal,
+    ResumoTextoPortal,
+    ocr_disponivel,
+    ocrescer_portal,
+    textuar_portal,
+)
+from .varredura import (
+    ErroVarredura,
+    resolver_portal_por_url,
+    rodar_varredura,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -101,9 +149,18 @@ fila_app = typer.Typer(
     help="Fila de Revisão Manual da datação (FR-8/CAP-3): listar e decidir.",
 )
 app.add_typer(fila_app, name="fila")
+varredura_app = typer.Typer(
+    no_args_is_help=True,
+    help=(
+        "Varredura sob demanda de páginas de editais a partir de URLs coladas: "
+        "adicionar, listar e rodar (story varredura)."
+    ),
+)
+app.add_typer(varredura_app, name="varredura")
 
 _ANO_MINIMO, _ANO_MAXIMO = 2019, 2026
 _STATUS_FILA = ("pendente", "resolvida")
+_STATUS_VARREDURA = ("pendente", "rodando", "concluida", "falhou")
 # Intervalo INTEGER do SQLite (assinado 64 bits) — seeds fora dele seriam
 # recusadas pelo banco só DEPOIS do lote aberto; valida-se ANTES (exit 2).
 _SEED_MINIMA = -(2**63)
@@ -551,6 +608,11 @@ def coletar(
         help="Sigla da instituição cujos portais serão coletados (ex.: IFBA).",
     ),
     todos: bool = typer.Option(False, "--todos", help="Coleta todos os portais do Mapa-Mestre."),
+    varredura: int | None = typer.Option(
+        None,
+        "--varredura",
+        help="ID de uma varredura — coleta SOMENTE os candidatos PDF que ela descobriu (v10).",
+    ),
 ) -> None:
     """CAP-4: baixa candidatos PDF com Registro L1 nascido na captura.
 
@@ -559,11 +621,12 @@ def coletar(
     com 403 persistente — o restante DO HOST é pulado, e a suspensão é
     compartilhada entre os portais da mesma execução —, cap de tamanho:
     tudo VIA fetcher (AD-5/AD-2/AD-11). Falhas NUNCA abortam o lote;
-    exit 0 mesmo com perdas registradas.
+    exit 0 mesmo com perdas registradas. ``--varredura ID`` restringe o
+    lote aos candidatos descobertos por aquela varredura (v10).
     """
-    if todos == (portal is not None):
-        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
-        raise typer.Exit(code=2)
+    escolhas = (portal is not None, todos, varredura is not None)
+    if sum(escolhas) != 1:
+        _recusar_flag("exatamente um de --portal SIGLA, --todos ou --varredura ID dirige a coleta.")
     if portal is not None and not portal.strip():
         typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
         raise typer.Exit(code=2)
@@ -580,6 +643,111 @@ def coletar(
             err=True,
         )
         raise typer.Exit(code=1)
+
+    mapa_sha256 = hash_arquivo(caminho_mapa)
+    politeness_sha256 = hash_arquivo(caminho_polidez)
+    raiz_corpus = _raiz_corpus()
+    try:
+        raiz_corpus.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        typer.echo(
+            f"ERRO: não foi possível criar a raiz do corpus em {raiz_corpus}: {exc}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    limpar_temporarios(raiz_corpus)
+
+    if varredura is not None:
+        resumos_varredura: list[ResumoColetaPortal] = []
+        with uso_manifesto() as manifesto:
+            linha, urls = _varredura_para_estagio(manifesto, varredura)
+            contexto = ContextoColeta(
+                linha["instituicao_sigla"], _portal_de_varredura(linha), linha["portal_id"]
+            )
+            with nova_sessao(polidez.user_agent) as sessao:
+                resumos_varredura.append(
+                    coletar_portal(
+                        contexto,
+                        manifesto,
+                        polidez,
+                        raiz_corpus=raiz_corpus,
+                        comando="coletar",
+                        sessao=sessao,
+                        urls_restritas=urls,
+                    )
+                )
+            manifesto.registrar_evento(
+                tipo="coletar_concluido",
+                comando="coletar",
+                detalhe={
+                    "portais": len(resumos_varredura),
+                    "alvo": f"--varredura {varredura}",
+                    "urls_restritas": len(urls),
+                    "mapa_sha256": mapa_sha256,
+                    "politeness_sha256": politeness_sha256,
+                    "raiz_corpus": str(raiz_corpus),
+                    "max_mb_documento": polidez.max_mb_documento,
+                    "totais": {
+                        chave: sum(getattr(resumo, chave) for resumo in resumos_varredura)
+                        for chave in (
+                            "candidatos_pdf",
+                            "baixados",
+                            "novas_versoes",
+                            "restaurados",
+                            "aliases_duplicados",
+                            "ja_integros",
+                            "tamanho_excedido",
+                            "conteudo_inesperado",
+                            "falhas_download",
+                            "bloqueios_robots",
+                            "urls_invalidas",
+                            "puladas_host_suspenso",
+                        )
+                    },
+                    "hosts_suspensos": [
+                        host for resumo in resumos_varredura for host in resumo.hosts_suspensos
+                    ],
+                    "urls_perdidas": [
+                        url for resumo in resumos_varredura for url in resumo.urls_perdidas
+                    ],
+                },
+            )
+        for resumo in resumos_varredura:
+            typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+            typer.echo(
+                f"  Candidatos PDF: {resumo.candidatos_pdf} "
+                f"(baixados: {resumo.baixados}, novas versões: {resumo.novas_versoes}, "
+                f"restaurados: {resumo.restaurados})"
+            )
+            typer.echo(
+                f"  Dedupe/retomada: {resumo.aliases_duplicados} alias por hash duplicado, "
+                f"{resumo.ja_integros} já íntegros (pulados sem rede)"
+            )
+            typer.echo(
+                f"  Perdas:      {resumo.tamanho_excedido} acima do cap "
+                f"({polidez.max_mb_documento:g} MB), "
+                f"{resumo.conteudo_inesperado} não-PDF, "
+                f"{resumo.falhas_download} falhas de download, "
+                f"{resumo.bloqueios_robots} bloqueios de robots"
+            )
+            if resumo.hosts_suspensos:
+                typer.echo(
+                    f"  Host suspenso (403×{polidez.max_403_consecutivos}): "
+                    f"{', '.join(resumo.hosts_suspensos)} — "
+                    "restante DO HOST é pulado nesta execução; tenta de novo na próxima."
+                )
+            for perdida in resumo.urls_perdidas:
+                typer.echo(f"  Perdida:    {perdida}")
+        typer.echo("")
+        if resumos_varredura and sum(r.puladas_host_suspenso for r in resumos_varredura):
+            typer.echo(f"URLs puladas por suspensão de host nesta execução: {sum(r.puladas_host_suspenso for r in resumos_varredura)}")
+        typer.echo(
+            f"Coleta concluída (varredura {varredura}): "
+            f"{sum(r.baixados + r.novas_versoes + r.restaurados for r in resumos_varredura)} "
+            f"documento(s) gravados em {raiz_corpus} "
+            "(L1 completo; eventos no Manifesto; lote não abortado)."
+        )
+        return
 
     alvo = portal.strip().upper() if portal else None
     pares = [
@@ -603,19 +771,6 @@ def coletar(
                 err=True,
             )
         raise typer.Exit(code=1)
-
-    mapa_sha256 = hash_arquivo(caminho_mapa)
-    politeness_sha256 = hash_arquivo(caminho_polidez)
-    raiz_corpus = _raiz_corpus()
-    try:
-        raiz_corpus.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        typer.echo(
-            f"ERRO: não foi possível criar a raiz do corpus em {raiz_corpus}: {exc}",
-            err=True,
-        )
-        raise typer.Exit(code=1) from exc
-    limpar_temporarios(raiz_corpus)
 
     resumos: list[ResumoColetaPortal] = []
     # suspensão de host COMPARTILHADA entre todos os portais desta execução:
@@ -739,6 +894,11 @@ def textuar(
         help="Sigla da instituição cujos portais serão textuados (ex.: IFBA).",
     ),
     todos: bool = typer.Option(False, "--todos", help="Textua todos os portais do Mapa-Mestre."),
+    varredura: int | None = typer.Option(
+        None,
+        "--varredura",
+        help="ID de uma varredura — textua SOMENTE os documentos das URLs que ela descobriu (v10).",
+    ),
 ) -> None:
     """CAP-6: extrai texto de cada Documento para um .txt irmão.
 
@@ -747,17 +907,71 @@ def textuar(
     ``limiar_chars_por_pagina``); proveniência gravada no Manifesto (v4).
     Retomável e idempotente: documentos já extraídos com hash vigente são
     pulados. NÃO faz I/O de rede — a janela off-peak não se aplica aqui.
-    Falhas por documento viram evento e o lote segue (exit 0).
+    Falhas por documento viram evento e o lote segue (exit 0). ``--varredura
+    ID`` restringe o lote às URLs descobertas por aquela varredura (v10).
     """
-    if todos == (portal is not None):
-        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
-        raise typer.Exit(code=2)
+    escolhas = (portal is not None, todos, varredura is not None)
+    if sum(escolhas) != 1:
+        _recusar_flag("exatamente um de --portal SIGLA, --todos ou --varredura ID dirige a texturação.")
     if portal is not None and not portal.strip():
         typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
         raise typer.Exit(code=2)
 
     mapa, caminho_mapa = _carregar_mapa_seguro()
     polidez, caminho_polidez = _carregar_polidez_segura()
+
+    politeness_sha256 = hash_arquivo(caminho_polidez)
+    limiar = polidez.texto_limiar_chars_por_pagina
+
+    if varredura is not None:
+        resumos_varredura: list[ResumoTextoPortal] = []
+        totais_varredura: dict[str, int] = {}
+        with uso_manifesto() as manifesto:
+            linha, urls = _varredura_para_estagio(manifesto, varredura)
+            contexto = ContextoTexto(
+                linha["instituicao_sigla"], _portal_de_varredura(linha), linha["portal_id"]
+            )
+            resumos_varredura.append(
+                textuar_portal(contexto, manifesto, limiar, comando="textuar", urls_restritas=urls)
+            )
+            totais_varredura = {
+                chave: sum(getattr(resumo, chave) for resumo in resumos_varredura)
+                for chave in ("documentos", "extraidos", "escaneados", "erros", "pulados")
+            }
+            manifesto.registrar_evento(
+                tipo="textuar_concluido",
+                comando="textuar",
+                detalhe={
+                    "portais": len(resumos_varredura),
+                    "alvo": f"--varredura {varredura}",
+                    "urls_restritas": len(urls),
+                    "mapa_sha256": hash_arquivo(caminho_mapa),
+                    "politeness_sha256": politeness_sha256,
+                    "limiar_chars_por_pagina": limiar,
+                    "totais": totais_varredura,
+                    "urls_perdidas": [
+                        url for resumo in resumos_varredura for url in resumo.urls_perdidas
+                    ],
+                },
+            )
+        for resumo in resumos_varredura:
+            typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+            typer.echo(
+                f"  Documentos: {resumo.documentos} "
+                f"(extraídos: {resumo.extraidos}, escaneados: {resumo.escaneados}, "
+                f"erros: {resumo.erros}, pulados: {resumo.pulados})"
+            )
+            for perdida in resumo.urls_perdidas:
+                typer.echo(f"  Perdida:    {perdida}")
+        typer.echo("")
+        typer.echo(
+            f"Extração concluída (varredura {varredura}): "
+            f"{totais_varredura['extraidos']} extraído(s), "
+            f"{totais_varredura['escaneados']} escaneado(s), "
+            f"{totais_varredura['erros']} erro(s), {totais_varredura['pulados']} pulado(s) "
+            "(.txt irmãos no corpus; eventos no Manifesto; lote não abortado)."
+        )
+        return
 
     alvo = portal.strip().upper() if portal else None
     pares = [
@@ -781,9 +995,6 @@ def textuar(
                 err=True,
             )
         raise typer.Exit(code=1)
-
-    politeness_sha256 = hash_arquivo(caminho_polidez)
-    limiar = polidez.texto_limiar_chars_por_pagina
 
     resumos: list[ResumoTextoPortal] = []
     totais: dict[str, int] = {}
@@ -845,6 +1056,151 @@ def textuar(
 
 
 @app.command()
+def ocrescer(
+    portal: str = typer.Option(
+        None,
+        "--portal",
+        help="Sigla da instituição cujos portais terão os PDFs escaneados resgatados por OCR.",
+    ),
+    todos: bool = typer.Option(
+        False, "--todos", help="Resgata por OCR os escaneados de TODOS os portais do Mapa-Mestre."
+    ),
+    confianca_minima: int | None = typer.Option(
+        None,
+        "--confianca-minima",
+        help="Mínimo de confiança média por página (0..100) para aceitar o texto óptico. "
+        "Default: [texto] ocr_confianca_minima do politeness.toml.",
+    ),
+    idioma: str = typer.Option(
+        None,
+        "--idioma",
+        help="Idioma do tesseract (pack de idioma instalado, ex.: por). "
+        "Default: [texto] ocr_lang do politeness.toml.",
+    ),
+) -> None:
+    """Resgata por OCR o texto de PDFs ESCANEADOS (`.txt` irmão + v11).
+
+    Estágio OPCIONAL e NÃO automático (Fase 3.1): nada dispara OCR sozinho —
+    você pede. Retomável: documento com ``ocr_em`` preenchido é pulado no
+    próximo ciclo; texto óptico valida (limiar) ➜ ``flag_escaneado`` zerada.
+    PDFs que o pypdf já extraiu nunca voltam (AD-11).
+    """
+    if (portal is not None) == todos:
+        _recusar_flag("exatamente um de --portal SIGLA ou --todos dirige o ocrescer.")
+    candidato = confianca_minima
+    if candidato is not None and (isinstance(candidato, bool) or not 0 <= candidato <= 100):
+        typer.echo(
+            "ERRO: --confianca-minima exige inteiro 0..100 "
+            "(`ocrescer --confianca-minima 60`).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    mapa, caminho_mapa = _carregar_mapa_seguro()
+    polidez, caminho_polidez = _carregar_polidez_segura()
+    politeness_sha256 = hash_arquivo(caminho_polidez)
+    limiar = polidez.texto_ocr_confianca_minima if confianca_minima is None else int(confianca_minima)
+    if limiar > polidez.texto_ocr_confianca_minima:
+        typer.echo(
+            f"AVISO: --confianca-minima {limiar} acima do ocr_confianca_minima "
+            f"({polidez.texto_ocr_confianca_minima}) — mais editais ficarão como escaneados.",
+            err=True,
+        )
+    idioma_efetivo = polidez.texto_ocr_lang if idioma is None else str(idioma)
+
+    if not ocr_disponivel(idioma_efetivo):
+        typer.echo(
+            f"ERRO: OCR indisponível (idioma '{idioma_efetivo}'). Sincronize o extra "
+            "opcional (uv sync --extra ocr) e instale o binário Tesseract com o pack "
+            "de idioma correspondente.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, p)
+        for instituicao in mapa.instituicao
+        for p in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        if todos:
+            typer.echo(
+                "ERRO: nenhum portal no Mapa-Mestre — cadastre instituições e "
+                "portais no mapa antes de ocrescer.",
+                err=True,
+            )
+        else:
+            siglas_conhecidas = ", ".join(sorted({i.sigla.upper() for i in mapa.instituicao}))
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas_conhecidas}.",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+
+    resumos: list[ResumoOcrPortal] = []
+    totais: dict[str, int] = {}
+    with uso_manifesto() as manifesto:
+        contextos: list[ContextoTexto] = []
+        ausentes: list[str] = []
+        for instituicao, p in pares:
+            id_portal = manifesto.id_portal_por_url(p.url)
+            if id_portal is None:
+                ausentes.append(f"[{instituicao.sigla}] {p.url}")
+                continue
+            contextos.append(ContextoTexto(instituicao.sigla, p, id_portal))
+        if ausentes:
+            typer.echo(
+                "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                f"'agente-editais mapa validar' antes de ocrescer: {'; '.join(ausentes)}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        for contexto in contextos:
+            resumos.append(
+                ocrescer_portal(contexto, manifesto, confianca_minima=limiar, idioma=idioma_efetivo)
+            )
+        totais = {
+            chave: sum(getattr(resumo, chave) for resumo in resumos)
+            for chave in ("escaneados", "resgatados", "falhas", "pulados")
+        }
+        manifesto.registrar_evento(
+            tipo="ocrescer_concluido",
+            comando="ocrescer",
+            detalhe={
+                "portais": len(resumos),
+                "alvo": "--todos" if todos else alvo,
+                "mapa_sha256": hash_arquivo(caminho_mapa),
+                "politeness_sha256": politeness_sha256,
+                "confianca_minima": limiar,
+                "idioma": idioma_efetivo,
+                "totais": totais,
+                "urls_falhas": [url for resumo in resumos for url in resumo.urls_falhas],
+            },
+        )
+
+    for resumo in resumos:
+        typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+        typer.echo(
+            f"  Escaneados: {resumo.escaneados} "
+            f"(resgatados: {resumo.resgatados}, falhas: {resumo.falhas}, pulados: {resumo.pulados})"
+        )
+        for falha in resumo.urls_falhas:
+            typer.echo(f"  Falha:     {falha}")
+
+    typer.echo("")
+    typer.echo(
+        f"OCR concluído: {len(resumos)} portal(is), "
+        f"{totais['escaneados']} escaneados, {totais['resgatados']} resgatado(s), "
+        f"{totais['falhas']} falha(s), {totais['pulados']} pulado(s) "
+        "(.txt irmãos no corpus; colunas ocr_* e eventos no Manifesto; lote não abortado)."
+    )
+
+
+@app.command()
 def datar(
     portal: str = typer.Option(
         None,
@@ -852,6 +1208,11 @@ def datar(
         help="Sigla da instituição cujos portais serão datados (ex.: IFBA).",
     ),
     todos: bool = typer.Option(False, "--todos", help="Data todos os portais do Mapa-Mestre."),
+    varredura: int | None = typer.Option(
+        None,
+        "--varredura",
+        help="ID de uma varredura — data SOMENTE os documentos das URLs que ela descobriu (v10).",
+    ),
 ) -> None:
     """CAP-3: datação multi-fonte OFFLINE com fila humana fundamentada.
 
@@ -863,16 +1224,68 @@ def datar(
     à Fila de Revisão Manual (``fila decidir``). Retomável e idempotente:
     documento datado ou já presente na fila é pulado. NÃO faz I/O de rede —
     a janela off-peak não se aplica. Falhas pontuais viram evento
-    ``datacao_erro`` e o lote segue (exit 0).
+    ``datacao_erro`` e o lote segue (exit 0). ``--varredura ID`` restringe o
+    lote às URLs descobertas por aquela varredura (v10).
     """
-    if todos == (portal is not None):
-        typer.echo("ERRO: use exatamente um de --portal SIGLA ou --todos.", err=True)
-        raise typer.Exit(code=2)
+    escolhas = (portal is not None, todos, varredura is not None)
+    if sum(escolhas) != 1:
+        _recusar_flag("exatamente um de --portal SIGLA, --todos ou --varredura ID dirige a datação.")
     if portal is not None and not portal.strip():
         typer.echo("ERRO: --portal exige uma sigla não vazia (ex.: --portal IFBA).", err=True)
         raise typer.Exit(code=2)
 
     mapa, caminho_mapa = _carregar_mapa_seguro()
+
+    mapa_sha256 = hash_arquivo(caminho_mapa)
+
+    if varredura is not None:
+        resumos_varredura: list[ResumoDatacaoPortal] = []
+        totais_varredura: dict[str, int] = {}
+        with uso_manifesto() as manifesto:
+            linha, urls = _varredura_para_estagio(manifesto, varredura)
+            contexto = ContextoDatacao(
+                linha["instituicao_sigla"], _portal_de_varredura(linha), linha["portal_id"]
+            )
+            resumos_varredura.append(
+                datar_portal(contexto, manifesto, comando="datar", urls_restritas=urls)
+            )
+            totais_varredura = {
+                chave: sum(getattr(resumo, chave) for resumo in resumos_varredura)
+                for chave in ("documentos", "aceitos", "enfileirados", "erros", "pulados")
+            }
+            manifesto.registrar_evento(
+                tipo="datar_concluido",
+                comando="datar",
+                detalhe={
+                    "portais": len(resumos_varredura),
+                    "alvo": f"--varredura {varredura}",
+                    "urls_restritas": len(urls),
+                    "mapa_sha256": mapa_sha256,
+                    "totais": totais_varredura,
+                    "urls_perdidas": [
+                        url for resumo in resumos_varredura for url in resumo.urls_perdidas
+                    ],
+                },
+            )
+        for resumo in resumos_varredura:
+            typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+            typer.echo(
+                f"  Documentos: {resumo.documentos} "
+                f"(aceitos: {resumo.aceitos}, fila: {resumo.enfileirados}, "
+                f"erros: {resumo.erros}, pulados: {resumo.pulados})"
+            )
+            for perdida in resumo.urls_perdidas:
+                typer.echo(f"  Perdida:    {perdida}")
+        typer.echo("")
+        typer.echo(
+            f"Datação concluída (varredura {varredura}): "
+            f"{totais_varredura['aceitos']} aceito(s), "
+            f"{totais_varredura['enfileirados']} na fila, "
+            f"{totais_varredura['erros']} erro(s), {totais_varredura['pulados']} pulado(s) "
+            "(evidências brutas + eventos no Manifesto; lote não abortado; "
+            "pendentes aguardam 'fila decidir')."
+        )
+        return
 
     alvo = portal.strip().upper() if portal else None
     pares = [
@@ -1193,6 +1606,40 @@ def _recusar_flag(mensagem: str) -> None:
     raise typer.Exit(code=2)
 
 
+def _varredura_para_estagio(
+    manifesto: Manifesto, varredura_id: int
+) -> tuple[sqlite3.Row, set[str]]:
+    """Resolve uma varredura p/ os estágios do pipeline (v10).
+
+    Retorna (linha da varredura com o contexto do portal ligado, URLs dos
+    candidatos que ela descobriu). ``urls`` é SEMPRE um set — vazio se a
+    varredura não descobriu candidatos novos (o estágio então não tem o que
+    fazer). Exit 1 se a varredura não existe.
+    """
+    linha = manifesto.varredura_por_id(varredura_id)
+    if linha is None:
+        typer.echo(
+            f"ERRO: nenhuma varredura com id {varredura_id} no Manifesto — "
+            "confira 'agente-editais varredura listar'.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    urls = {c["url"] for c in manifesto.candidatos_de_varredura(varredura_id)}
+    return linha, urls
+
+
+def _portal_de_varredura(linha: sqlite3.Row) -> Portal:
+    """Portal sintético da varredura — mesmo da execução (sem persistir nada)."""
+    return Portal(
+        nome=linha["portal_nome"],
+        categoria=linha["portal_categoria"],
+        url=linha["portal_url"],
+        seeds=[linha["url"]],
+        dinamico=bool(linha["portal_dinamico"]),
+        profundidade_maxima=int(linha["portal_profundidade_maxima"]),
+    )
+
+
 @fila_app.command("listar")
 def fila_listar(
     status: str = typer.Option(
@@ -1348,6 +1795,824 @@ def fila_decidir(
         )
 
 
+# -- varredura sob demanda + classificação (story varredura) — migração v8 ----
+
+def _carregar_sinais_seguro():
+    """Sinais de inovação + mapa de dimensões válidos, ou exit 2 (AD-9).
+
+    Falhas (arquivo ausente/malformado, schema_version != 1) são config
+    declarativa inválida — nada de rede/banco é tocado antes desta recusa.
+    """
+    caminho_sinais = _dir_configs() / "sinais_inovacao.yaml"
+    caminho_dimensoes = _dir_configs() / "sinais_analiticos.yaml"
+    try:
+        return carregar_sinais(caminho_sinais, caminho_dimensoes)
+    except ErroConfigSinais as exc:
+        typer.echo(f"ERRO: config de sinais inválida (AD-9): {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+_EXTENSOES_DE_ARQUIVO = frozenset(
+    {
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".odt", ".ods", ".odp", ".zip", ".rar", ".7z", ".tar", ".gz",
+    }
+)
+
+
+def _e_url_de_arquivo(url_normalizada: str) -> bool:
+    """URL de arquivo binário (pdf/doc/xlsx/zip...) — não é página de editais.
+
+    ``varredura adicionar`` existe para LISTAGENS HTML; colar um PDF vira
+    o root do BFS e contamina a varredura com um candidato espúrio.
+    """
+    caminho = urlparse(url_normalizada).path.lower()
+    return caminho.endswith(tuple(_EXTENSOES_DE_ARQUIVO))
+
+
+_HORAS_PARA_RECUPERAR_RODANDO = 2
+
+
+def _rodando_recente(iniciado_em: str | None) -> bool:
+    """Varredura 'rodando' iniciada há menos de N horas — NÃO é travada.
+
+    ``rodar --id`` recupera travada (processo morto); uma 'rodando' recente
+    está provavelmente viva em outro processo — forçá-la tocaria a rede em
+    duplicidade (AD-1/AD-3), então é recusa até a janela de recuperação.
+    """
+    if not iniciado_em:
+        return False
+    try:
+        inicio = datetime.fromisoformat(iniciado_em)
+    except (TypeError, ValueError):
+        return False
+    agoratar = datetime.now(inicio.tzinfo or timezone.utc)
+    return agoratar - inicio < timedelta(hours=_HORAS_PARA_RECUPERAR_RODANDO)
+
+
+@varredura_app.command("adicionar")
+def varredura_adicionar(
+    url: list[str] = typer.Argument(
+        ...,
+        help="Uma ou mais URLs (http/https) de páginas de editais.",
+    ),
+) -> None:
+    """Registra URLs coladas para varredura (uma varredura por URL).
+
+    Resolve o portal de destino por HOSTNAME da URL contra o Mapa-Mestre
+    (funciona para URLs profundas sob o host do portal) e NUNCA auto-registra
+    instituição/portal novo (Ask-First): host sem portal é RECUSA — exit 2,
+    nada é escrito e os hosts conhecidos são listados. Duplicadas (mesma URL
+    normalizada, AD-8) são avisadas e ignoradas (UNIQUE no banco); URL nova
+    vira varredura 'pendente'. A validação acontece ANTES de abrir o Manifesto.
+    """
+    if not url:
+        _recusar_flag(
+            "passe ao menos uma URL (ex.: varredura adicionar https://...)."
+        )
+
+    mapa, _ = _carregar_mapa_seguro()  # exit 2 antes de abrir o banco
+
+    validos: list[tuple[str, Instituicao, Portal]] = []
+    problemas: list[str] = []
+    for bruta in url:
+        try:
+            normalizada = normalizar_url(bruta)
+        except ValueError as exc:
+            problemas.append(f"'{bruta}': {exc}")
+            continue
+        if _e_url_de_arquivo(normalizada):
+            problemas.append(
+                f"'{bruta}': URL parece apontar para arquivo binário "
+                "(.pdf/.doc/.xlsx/.zip...). A varredura é para páginas de "
+                "editais (HTML); o download direto é papel do 'coletar'."
+            )
+            continue
+        try:
+            resolvido = resolver_portal_por_url(mapa, normalizada)
+        except ErroVarredura as exc:
+            problemas.append(f"'{bruta}': {exc}")
+            continue
+        if resolvido is None:
+            hosts_conhecidos = sorted(
+                {
+                    hostname_de(portal.url)
+                    for instituicao in mapa.instituicao
+                    for portal in instituicao.portal
+                }
+            )
+            problemas.append(
+                f"'{bruta}': host sem portal cadastrado no Mapa-Mestre "
+                f"(hosts conhecidos: {', '.join(hosts_conhecidos) or 'nenhum'})"
+            )
+            continue
+        validos.append((normalizada, resolvido[0], resolvido[1]))
+    if problemas:
+        for problema in problemas:
+            typer.echo(f"ERRO: {problema}", err=True)
+        typer.echo(
+            "ERRO: nenhuma URL registrada — a varredura NUNCA auto-registra "
+            "instituição/portal novo; cadastre o portal no mapa-mestre.toml e "
+            "rode 'agente-editais mapa validar' antes de colar o host.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    novas = 0
+    duplicadas = 0
+    with uso_manifesto() as manifesto:
+        # 1) RESOLVE o portal_id de TODAS as URLs ANTES de qualquer INSERT
+        #    (AD-3): se um portal do lote não estiver sincronizado, NADA é
+        #    escrito — o lote jamais fica pela metade.
+        resolvidos: list[tuple[str, Instituicao, Portal, int]] = []
+        for normalizada, instituicao, portal in validos:
+            id_portal = manifesto.id_portal_por_url(portal.url)
+            if id_portal is None:
+                typer.echo(
+                    "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                    "'agente-editais mapa validar' antes de adicionar URLs.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            resolvidos.append((normalizada, instituicao, portal, id_portal))
+        # 2) TODOS resolvidos ⇒ grava uma varredura por URL.
+        for normalizada, instituicao, portal, id_portal in resolvidos:
+            registrada = manifesto.varredura_adicionar(normalizada, id_portal)
+            manifesto.registrar_evento(
+                tipo="varredura_adicionada",
+                comando="varredura",
+                detalhe={
+                    "instituicao": instituicao.sigla,
+                    "portal": portal.nome,
+                    "url": normalizada,
+                    "portal_id": id_portal,
+                    "nova": registrada,
+                },
+            )
+            if registrada:
+                novas += 1
+                typer.echo(f"[{instituicao.sigla}] {portal.nome}: {normalizada}")
+            else:
+                duplicadas += 1
+                typer.echo(f"[já cadastrada] {normalizada}")
+
+    typer.echo(
+        f"Varredura pronta: {novas} nova(s) pendente(s) — rode "
+        "'agente-editais varredura rodar'. {duplicadas} duplicada(s) ignorada(s) "
+        "(matriz I/O: uma varredura por URL)."
+    )
+
+
+@varredura_app.command("listar")
+def varredura_listar(
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help="Filtra por status: pendente | rodando | concluida | falhou | todas.",
+    ),
+    limite: int | None = typer.Option(
+        None,
+        "--limite",
+        help="Limita o número de linhas exibidas.",
+    ),
+) -> None:
+    """Lista as varreduras registradas (somente leitura — AD-3/AD-4)."""
+    if status is not None:
+        if status == "":
+            _recusar_flag("--status vazio é ambíguo; use 'todas' ou omita a flag.")
+        if status == "todas":
+            status = None
+        elif status not in _STATUS_VARREDURA:
+            _recusar_flag(
+                f"--status deve ser 'pendente', 'rodando', 'concluida', "
+                f"'falhou' ou 'todas' (recebido {status!r})."
+            )
+    if limite is not None and limite < 1:
+        _recusar_flag("--limite deve ser >= 1.")
+
+    with uso_manifesto() as manifesto:
+        linhas = manifesto.varreduras_por_status(status)
+    linhas = linhas[:limite] if limite is not None else linhas
+    if not linhas:
+        typer.echo(
+            "Nenhuma varredura registrada."
+            if status is None
+            else f"Nenhuma varredura com status '{status}'."
+        )
+        return
+
+    cabecalho = ["ID", "URL", "INST", "PORTAL", "STATUS", "CRIADO", "TERMINADO"]
+    registros = [
+        (
+            str(linha["id"]),
+            str(linha["url"]),
+            str(linha["instituicao_sigla"]),
+            str(linha["portal_nome"]),
+            str(linha["status"]),
+            str(linha["criado_em"]),
+            "" if linha["concluido_em"] is None else str(linha["concluido_em"]),
+        )
+        for linha in linhas
+    ]
+    for rodada in _tabela_simples(cabecalho, registros):
+        typer.echo(rodada)
+
+
+@varredura_app.command("rodar")
+def varredura_rodar(
+    id: int | None = typer.Option(
+        None,
+        "--id",
+        help="Executa APENAS a varredura com este id (força a re-execução e "
+        "recupera travadas em 'rodando'; sem --id: todas as pendentes).",
+    ),
+    fora_da_janela: bool = typer.Option(
+        False,
+        "--fora-da-janela",
+        help="Executa mesmo fora da janela off-peak (fuso do host), sob "
+        "responsabilidade explícita da curadoria (Ask-First).",
+    ),
+) -> None:
+    """Executa varreduras pendentes VIA fetcher (AD-5) — uma página por URL.
+
+    Sem ``--id`` roda as 'pendentes' sob CAS (AD-3): uma que outro processo
+    tenha reclamado como 'rodando' é PULADA, sem rede em duplicidade. Com
+    ``--id`` a execução é FORÇADA — re-executa e também RECUPERA varreduras
+    travadas em 'rodando' por processo morto. Fora da janela off-peak a rede
+    NÃO é tocada e a varredura segue 'pendente' (Ask-First): o erro aponta o
+    coleta_complementar.bat (que roda fora do horário) ou o flag
+    --fora-da-janela. Rodadas são idempotentes (AD-1): seções já visitadas
+    viram 'já conhecidas'. Falhas por rodada viram status 'falhou' + evento e
+    o lote segue (exit 0).
+    """
+    polidez, _ = _carregar_polidez_segura()
+    reiniciar_estado_polidez()  # estado de polidez vale POR EXECUÇÃO (§9.1)
+
+    with uso_manifesto() as manifesto:
+        if id is not None:
+            linhas = [
+                linha
+                for linha in [manifesto.varredura_por_id(id)]
+                if linha is not None
+            ]
+            if not linhas:
+                typer.echo(
+                    f"ERRO: varredura {id} não existe no Manifesto.", err=True
+                )
+                raise typer.Exit(code=1)
+            if linhas[0]["status"] == "rodando" and _rodando_recente(
+                linhas[0]["iniciado_em"]
+            ):
+                typer.echo(
+                    f"ERRO: varredura {id} está 'rodando' desde "
+                    f"{linhas[0]['iniciado_em']} (menos de "
+                    f"{_HORAS_PARA_RECUPERAR_RODANDO}h) — provavelmente em "
+                    "execução por outro processo; a recuperação forçada só é "
+                    "segura após a janela de recuperação. Confira "
+                    "'varredura listar' antes de forçar.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+        else:
+            linhas = manifesto.varreduras_por_status("pendente")
+            if not linhas:
+                typer.echo("Nenhuma varredura pendente.")
+                return
+
+        if (
+            not fora_da_janela
+            and polidez.crawl_respeitar_janela_off_peak
+            and not dentro_da_janela_off_peak(polidez.off_peak)
+        ):
+            typer.echo(
+                f"ERRO: fora da janela off-peak ({polidez.off_peak}) no fuso do host; "
+                "varredura recusada (Ask-First) e as pendentes seguem 'pendente'. "
+                "Rode fora do horário (coleta_complementar.bat) ou com "
+                "--fora-da-janela sob responsabilidade explícita da curadoria.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        concluidas = 0
+        puladas = 0
+        falhas = 0
+        with nova_sessao(polidez.user_agent) as sessao:
+            for linha in linhas:
+                if not manifesto.marcar_varredura_iniciada(
+                    linha["id"], forcar=id is not None
+                ):
+                    puladas += 1
+                    manifesto.registrar_evento(
+                        tipo="varredura_em_andamento_ignorada",
+                        comando="varredura",
+                        detalhe={
+                            "id": linha["id"],
+                            "url": linha["url"],
+                            "status": linha["status"],
+                        },
+                    )
+                    typer.echo(
+                        f"[{linha['instituicao_sigla']}] varredura "
+                        f"{linha['id']} já em execução — pulada (CAS, AD-3).",
+                        err=True,
+                    )
+                    continue
+                try:
+                    resumo = rodar_varredura(
+                        linha, manifesto, polidez, sessao=sessao
+                    )
+                except ViolacaoPolidez as exc:
+                    manifesto.marcar_varredura_falhou(linha["id"], str(exc))
+                    falhas += 1
+                    typer.echo(
+                        f"[{linha['instituicao_sigla']}] FALHA — varredura "
+                        f"{linha['id']}: {exc}",
+                        err=True,
+                    )
+                    continue
+                except Exception as exc:
+                    manifesto.marcar_varredura_falhou(linha["id"], str(exc))
+                    falhas += 1
+                    typer.echo(
+                        f"[{linha['instituicao_sigla']}] FALHA — varredura "
+                        f"{linha['id']}: {exc}",
+                        err=True,
+                    )
+                    continue
+                if not manifesto.marcar_varredura_concluida(
+                    linha["id"], resumo.totalizar()
+                ):
+                    puladas += 1
+                    typer.echo(
+                        f"[{linha['instituicao_sigla']}] VAR AÍ — varredura "
+                        f"{linha['id']} finalizou, mas o status mudou no meio "
+                        "(escrita concorrente). Confira 'varredura listar'.",
+                        err=True,
+                    )
+                    continue
+                concluidas += 1
+                typer.echo(
+                    f"[{linha['instituicao_sigla']}] {linha['portal_nome']} "
+                    f"<{linha['url']}>"
+                )
+                typer.echo(
+                    f"  Seções: {resumo.secoes_visitadas} visitadas, "
+                    f"{resumo.secoes_ja_conhecidas} já conhecidas, "
+                    f"{resumo.secoes_falha} falhas"
+                )
+                typer.echo(
+                    f"  Candidatos: {resumo.candidatos_novos} novos, "
+                    f"{resumo.candidatos_duplicados} duplicados"
+                )
+    typer.echo("")
+    typer.echo(
+        f"Varredura concluída: {concluidas} executada(s), {puladas} pulada(s), "
+        f"{falhas} falha(s) (resumos e eventos no Manifesto; lote não abortado "
+        "por falhas pontuais)."
+    )
+
+
+def _echo_classificacao(resumo: ResumoClassificacao) -> None:
+    typer.echo(f"[{resumo.instituicao_sigla}] {resumo.portal_nome}")
+    typer.echo(
+        f"  Classificados: {resumo.documentos} "
+        f"(inovacao={resumo.inovacao}, nao_inovacao={resumo.nao_inovacao}, "
+        f"sem_texto={resumo.sem_texto})"
+    )
+    typer.echo(
+        f"  Já definitivos: {resumo.ja_classificados} (never sobrescritos); "
+        f"excluídos pela curadoria: {resumo.excluidos_ignorados}"
+    )
+    if resumo.arquivos_ausentes:
+        typer.echo(
+            f"Aviso: {resumo.arquivos_ausentes} documento(s) com texto_caminho "
+            "apontando para arquivo ausente do diretório atual — classificado "
+            "como sem_texto. Rode a partir do CWD de onde 'textuar' rodou (ou "
+            "com AGENTE_EDITAIS_CORPUS apontando para o corpus)."
+        )
+
+
+@app.command()
+def classificar(
+    portal: str | None = typer.Option(
+        None,
+        "--portal",
+        help="Sigla da instituição cujos documentos serão classificados.",
+    ),
+    todos: bool = typer.Option(
+        False, "--todos", help="Classifica todos os portais do Mapa-Mestre."
+    ),
+    documento: str | None = typer.Option(
+        None,
+        "--documento",
+        help="URL exata normalizada de UM documento (reclassificar individual).",
+    ),
+    varredura: int | None = typer.Option(
+        None,
+        "--varredura",
+        help="ID de uma varredura — classifica SOMENTE os documentos das URLs que ela descobriu (v10).",
+    ),
+) -> None:
+    """Classifica o tipo de edital (veredito ADVISORY — nunca exclui).
+
+    Sinais de inovação vêm de ``configs/sinais_inovacao.yaml`` (AD-9); as
+    dimensões atingidas, de ``sinais_analiticos.yaml`` (Quadro 1.6). Matching
+    token-inteiro insensível a caixa E acento; documentos excluídos pela
+    curadoria ficam FORA da população; um veredito já definitivo (metodo
+    texto/âncora) NUNCA é sobrescrito — re-classificação só preenche
+    ``sem_texto`` (Never da story). ``--varredura ID`` restringe o lote às
+    URLs descobertas por aquela varredura (v10).
+    """
+    escolhas = (portal is not None, todos, documento is not None, varredura is not None)
+    if sum(escolhas) != 1:
+        _recusar_flag(
+            "exatamente um de --portal SIGLA, --todos, --documento URL ou "
+            "--varredura ID dirige a classificação."
+        )
+
+    sinais = _carregar_sinais_seguro()  # exit 2 ANTES de abrir o banco (AD-9)
+
+    if documento is not None:
+        if not documento.strip():
+            _recusar_flag("--documento exige uma URL não vazia.")
+        try:
+            url = normalizar_url(documento)
+        except ValueError as exc:
+            _recusar_flag(f"--documento inválido: {exc}")
+        with uso_manifesto() as manifesto:
+            try:
+                resumo = classificar_documento(manifesto, sinais, url)
+            except ErroClassificacao as exc:
+                typer.echo(f"ERRO: {exc}", err=True)
+                raise typer.Exit(code=1) from exc
+        if resumo is None:
+            typer.echo(
+                f"ERRO: nenhum documento no Manifesto responde por {url}.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        _echo_classificacao(resumo)
+        typer.echo(
+            "Classificação concluída para o documento (veredito ADVISORY: a "
+            "curadoria continua sendo a única autoridade de exclusão)."
+        )
+        return
+
+    if varredura is not None:
+        resumos_varredura: list[ResumoClassificacao] = []
+        with uso_manifesto() as manifesto:
+            linha, urls = _varredura_para_estagio(manifesto, varredura)
+            contexto = ContextoPortal(
+                linha["instituicao_sigla"], _portal_de_varredura(linha), linha["portal_id"]
+            )
+            resumos_varredura.append(
+                classificar_portal(contexto, manifesto, sinais, urls_restritas=urls)
+            )
+        for resumo in resumos_varredura:
+            _echo_classificacao(resumo)
+        typer.echo("")
+        typer.echo(
+            f"Classificação concluída (varredura {varredura}): "
+            f"{len(resumos_varredura)} portal(is) "
+            "(veredito ADVISORY — a curadoria continua sendo a única autoridade "
+            "de exclusão; resultados definitivos nunca são sobrescritos)."
+        )
+        return
+
+    mapa, _ = _carregar_mapa_seguro()
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, portal_do_mapa)
+        for instituicao in mapa.instituicao
+        for portal_do_mapa in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        if todos:
+            typer.echo("ERRO: nenhum portal no Mapa-Mestre para classificar.", err=True)
+        else:
+            siglas = ", ".join(
+                sorted({instituicao.sigla.upper() for instituicao in mapa.instituicao})
+            )
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas}.",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+
+    resumos: list[ResumoClassificacao] = []
+    with uso_manifesto() as manifesto:
+        contextos: list[ContextoPortal] = []
+        ausentes: list[str] = []
+        for instituicao, portal_do_mapa in pares:
+            id_portal = manifesto.id_portal_por_url(portal_do_mapa.url)
+            if id_portal is None:
+                ausentes.append(f"[{instituicao.sigla}] {portal_do_mapa.url}")
+                continue
+            contextos.append(
+                ContextoPortal(instituicao.sigla, portal_do_mapa, id_portal)
+            )
+        if ausentes:
+            typer.echo(
+                "ERRO: portais ainda não sincronizados no Manifesto — rode "
+                f"'agente-editais mapa validar' antes de classificar: "
+                f"{'; '.join(ausentes)}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        for contexto in contextos:
+            resumos.append(classificar_portal(contexto, manifesto, sinais))
+    for resumo in resumos:
+        _echo_classificacao(resumo)
+    typer.echo("")
+    typer.echo(
+        f"Classificação concluída: {len(resumos)} portal(is) "
+        "(veredito ADVISORY — a curadoria continua sendo a única autoridade "
+        "de exclusão; resultados definitivos nunca são sobrescritos)."
+    )
+
+
+# -- Eixo 3 (Relevância e Impacto Social) ---------------------------------------
+
+def _carregar_config_eixo3_seguro() -> ConfigEixo3:
+    """Carrega config de eixo3.yaml; exit 2 se inválida (AD-9)."""
+    try:
+        return carregar_config_eixo3(_dir_configs() / "eixo3.yaml")
+    except ErroConfigEixo3 as exc:
+        typer.echo(f"ERRO config eixo3: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+def _echo_eixo3(resumo: dict) -> None:
+    """Imprime resumo de classificação Eixo 3 no formato padrão."""
+    typer.echo(f"  Instituição: {resumo['instituicao']}")
+    typer.echo(f"  Portal:      {resumo['portal']}")
+    typer.echo(f"  Documentos:  {resumo['documentos']}")
+    typer.echo(f"  Instrumental: {resumo['instrumental']}")
+    typer.echo(f"  Substantivo:  {resumo['substantivo']}")
+    typer.echo(f"  Silêncio:     {resumo['silencio']}")
+    typer.echo(f"  Já classificados: {resumo['ja_classificados']}")
+    typer.echo(f"  Excluídos ignorados: {resumo['excluidos_ignorados']}")
+    typer.echo(f"  Arquivos ausentes: {resumo['arquivos_ausentes']}")
+
+
+@app.command(name="classificar-eixo3")
+def classificar_eixo3_cmd(
+    portal: str | None = typer.Option(
+        None, "--portal", help="Sigla da instituição cujos documentos serão classificados."
+    ),
+    todos: bool = typer.Option(False, "--todos", help="Classifica todos os portais do Mapa-Mestre."),
+    documento: str | None = typer.Option(
+        None, "--documento", help="URL exata normalizada de UM documento."
+    ),
+    varredura: int | None = typer.Option(
+        None,
+        "--varredura",
+        help="ID de uma varredura — classifica SOMENTE os documentos das URLs que ela descobriu (v10).",
+    ),
+) -> None:
+    """Classifica o Eixo 3 (Relevância e Impacto Social) dos editais.
+
+    Regras (conforme instruções de codificação):
+    - IMPACTO_INSTRUMENTAL: critérios EXCLUSIVAMENTE "potencial de mercado" e "viabilidade financeira"
+    - IMPACTO_SUBSTANTIVO: reserva cotas/bolsas para tecnologias sociais, comunidades vulneráveis ou economia solidária
+    - AUSENTE_SILENCIAMENTO: nenhum dos padrões acima
+
+    Obrigatório: extrair trecho probatório literal do PDF.
+    """
+    escolhas = (portal is not None, todos, documento is not None, varredura is not None)
+    if sum(escolhas) != 1:
+        typer.echo(
+            "ERRO: exatamente um de --portal SIGLA, --todos, --documento URL ou "
+            "--varredura ID dirige a classificação.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    config = _carregar_config_eixo3_seguro()
+
+    if documento is not None:
+        if not documento.strip():
+            typer.echo("ERRO: --documento exige uma URL não vazia.", err=True)
+            raise typer.Exit(code=2)
+        try:
+            url = normalizar_url(documento)
+        except ValueError as exc:
+            typer.echo(f"ERRO: --documento inválido: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        with uso_manifesto() as manifesto:
+            docs = manifesto.documentos_para_classificar(url_origem=url)
+            if not docs:
+                typer.echo(f"ERRO: nenhum documento no Manifesto responde por {url}.", err=True)
+                raise typer.Exit(code=1)
+            doc = docs[0]
+            if doc["excluido_vigente"]:
+                typer.echo("ERRO: documento excluído da curadoria (fila de revisão).", err=True)
+                raise typer.Exit(code=1)
+            previo = manifesto.classificacao_obter(url)
+            tipo_edital_existente = previo["tipo_edital"] if previo else "sem_texto"
+            metodo_existente = previo["metodo"] if previo else "sem_texto"
+            texto = Path(doc["texto_caminho"]).read_text(encoding="utf-8", errors="replace") if doc["texto_caminho"] else ""
+            desfecho = classificar_eixo3_fn(texto, config)
+            manifesto.classificacao_registrar(
+                url_origem=url,
+                tipo_edital=tipo_edital_existente,
+                metodo=metodo_existente,
+                eixo3_classificacao=desfecho.codigo,
+                eixo3_trecho_comprobatorio=desfecho.trecho_comprobatorio,
+            )
+            typer.echo(f"Eixo 3 — {url}: {desfecho.codigo}")
+            if desfecho.trecho_comprobatorio:
+                typer.echo(f"  Trecho: {desfecho.trecho_comprobatorio}")
+        return
+
+    if varredura is not None:
+        with uso_manifesto() as manifesto:
+            linha, urls = _varredura_para_estagio(manifesto, varredura)
+            contexto = ContextoPortal(
+                linha["instituicao_sigla"], _portal_de_varredura(linha), linha["portal_id"]
+            )
+            docs = [
+                d
+                for d in manifesto.documentos_para_classificar(contexto.portal_id)
+                if d["url_origem"] in urls
+            ]
+            resumo = {
+                "instituicao": linha["instituicao_sigla"],
+                "portal": linha["portal_nome"],
+                "documentos": 0,
+                "instrumental": 0,
+                "substantivo": 0,
+                "silencio": 0,
+                "ja_classificados": 0,
+                "excluidos_ignorados": 0,
+                "arquivos_ausentes": 0,
+            }
+            for doc in docs:
+                if doc["excluido_vigente"]:
+                    resumo["excluidos_ignorados"] += 1
+                    continue
+                previo = manifesto.classificacao_obter(doc["url_origem"])
+                if previo and previo["eixo3_classificacao"] != "AUSENTE_SILENCIAMENTO":
+                    resumo["ja_classificados"] += 1
+                    continue
+                texto = ""
+                tipo_edital_existente = "sem_texto"
+                metodo_existente = "sem_texto"
+                if previo:
+                    tipo_edital_existente = previo["tipo_edital"]
+                    metodo_existente = previo["metodo"]
+                if doc["texto_caminho"]:
+                    try:
+                        texto = Path(doc["texto_caminho"]).read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        resumo["arquivos_ausentes"] += 1
+                        continue
+                    desfecho = classificar_eixo3_fn(texto, config)
+                    manifesto.classificacao_registrar(
+                        url_origem=doc["url_origem"],
+                        tipo_edital=tipo_edital_existente,
+                        metodo=metodo_existente,
+                        eixo3_classificacao=desfecho.codigo,
+                        eixo3_trecho_comprobatorio=desfecho.trecho_comprobatorio,
+                    )
+                resumo["documentos"] += 1
+                if desfecho.codigo == "IMPACTO_INSTRUMENTAL":
+                    resumo["instrumental"] += 1
+                elif desfecho.codigo == "IMPACTO_SUBSTANTIVO":
+                    resumo["substantivo"] += 1
+                else:
+                    resumo["silencio"] += 1
+            _echo_eixo3(resumo)
+        typer.echo("Classificação Eixo 3 concluída.")
+        return
+
+    mapa, _ = _carregar_mapa_seguro()
+    alvo = portal.strip().upper() if portal else None
+    pares = [
+        (instituicao, portal_do_mapa)
+        for instituicao in mapa.instituicao
+        for portal_do_mapa in instituicao.portal
+        if todos or instituicao.sigla.upper() == alvo
+    ]
+    if not pares:
+        if todos:
+            typer.echo("ERRO: nenhum portal no Mapa-Mestre para classificar.", err=True)
+        else:
+            siglas = ", ".join(
+                sorted({instituicao.sigla.upper() for instituicao in mapa.instituicao})
+            )
+            typer.echo(
+                f"ERRO: nenhuma instituição com sigla '{portal}' no Mapa-Mestre. "
+                f"Siglas conhecidas: {siglas}.",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+
+    with uso_manifesto() as manifesto:
+        for instituicao, portal_do_mapa in pares:
+            id_portal = manifesto.id_portal_por_url(portal_do_mapa.url)
+            if id_portal is None:
+                typer.echo(f"AVISO: portal não sincronizado — pulando: {portal_do_mapa.url}", err=True)
+                continue
+            contexto = ContextoPortal(instituicao.sigla, portal_do_mapa, id_portal)
+            docs = manifesto.documentos_para_classificar(contexto.portal_id)
+            resumo = {
+                "instituicao": instituicao.sigla,
+                "portal": portal_do_mapa.nome,
+                "documentos": 0,
+                "instrumental": 0,
+                "substantivo": 0,
+                "silencio": 0,
+                "ja_classificados": 0,
+                "excluidos_ignorados": 0,
+                "arquivos_ausentes": 0,
+            }
+            for doc in docs:
+                if doc["excluido_vigente"]:
+                    resumo["excluidos_ignorados"] += 1
+                    continue
+                # Verificar se já tem classificação Eixo 3 definitiva
+                previo = manifesto.classificacao_obter(doc["url_origem"])
+                if previo and previo["eixo3_classificacao"] != "AUSENTE_SILENCIAMENTO":
+                    resumo["ja_classificados"] += 1
+                    continue
+                texto = ""
+                tipo_edital_existente = "sem_texto"
+                metodo_existente = "sem_texto"
+                if previo:
+                    tipo_edital_existente = previo["tipo_edital"]
+                    metodo_existente = previo["metodo"]
+                if doc["texto_caminho"]:
+                    try:
+                        texto = Path(doc["texto_caminho"]).read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        resumo["arquivos_ausentes"] += 1
+                        continue
+                    desfecho = classificar_eixo3_fn(texto, config)
+                    manifesto.classificacao_registrar(
+                        url_origem=doc["url_origem"],
+                        tipo_edital=tipo_edital_existente,
+                        metodo=metodo_existente,
+                        eixo3_classificacao=desfecho.codigo,
+                        eixo3_trecho_comprobatorio=desfecho.trecho_comprobatorio,
+                    )
+                resumo["documentos"] += 1
+                if desfecho.codigo == "IMPACTO_INSTRUMENTAL":
+                    resumo["instrumental"] += 1
+                elif desfecho.codigo == "IMPACTO_SUBSTANTIVO":
+                    resumo["substantivo"] += 1
+                else:
+                    resumo["silencio"] += 1
+            _echo_eixo3(resumo)
+    typer.echo("Classificação Eixo 3 concluída.")
+
+
+@app.command()
+def eixo3_status(
+    portal: str | None = typer.Option(None, "--portal", help="Filtrar por sigla da instituição."),
+) -> None:
+    """Mostra contagens de classificação Eixo 3 no Manifesto."""
+    with uso_manifesto() as manifesto:
+        if portal:
+            # Buscar portal_id
+            mapa, _ = _carregar_mapa_seguro()
+            alvo = portal.strip().upper()
+            pares = [
+                (instituicao, portal_do_mapa)
+                for instituicao in mapa.instituicao
+                for portal_do_mapa in instituicao.portal
+                if instituicao.sigla.upper() == alvo
+            ]
+            if not pares:
+                typer.echo(f"ERRO: instituição '{portal}' não encontrada.", err=True)
+                raise typer.Exit(code=1)
+            id_portal = manifesto.id_portal_por_url(pares[0][1].url)
+            if id_portal is None:
+                typer.echo(f"ERRO: portal não sincronizado: {pares[0][1].url}", err=True)
+                raise typer.Exit(code=1)
+            where = "AND d.id IN (SELECT id FROM documentos WHERE edital_id IN (SELECT id FROM editais WHERE instituicao_id = (SELECT id FROM instituicoes WHERE sigla = ?)))"
+            params: tuple[str, ...] = (alvo,)
+        else:
+            where = ""
+            params = ()
+
+        sql = f"""
+            SELECT cl.eixo3_classificacao, COUNT(*) as qtd
+            FROM classificacoes cl
+            JOIN documentos d ON d.url_origem = cl.url_origem
+            WHERE cl.eixo3_classificacao IS NOT NULL {where}
+            GROUP BY cl.eixo3_classificacao
+        """
+        linhas = manifesto.consultar(sql, params)
+        if not linhas:
+            typer.echo("Nenhuma classificação Eixo 3 encontrada.")
+            return
+        for linha in linhas:
+            typer.echo(f"  {linha['eixo3_classificacao']}: {linha['qtd']}")
+
+
 # -- consulta essencial (CAP-9/UJ-3/§10): comandos ONLY-leitura ---------------------
 
 _COLUNAS_CSV: tuple[str, ...] = (
@@ -1387,6 +2652,21 @@ def _recusar_saida_no_manifesto(saida: Path | None) -> None:
             "--saida não pode apontar para o próprio Manifesto "
             f"({caminho_manifesto}): o export sobrescreveria o banco."
         )
+
+
+def _tabela_simples(
+    cabecalho: list[str], registros: list[tuple[str, ...]]
+) -> list[str]:
+    """Tabela alinhada genérica para o terminal (mesmo estilo de ``_tabela_l1``)."""
+    larguras = [len(coluna) for coluna in cabecalho]
+    for registro in registros:
+        for indice, valor in enumerate(registro):
+            larguras[indice] = max(larguras[indice], len(valor))
+    saida = ["  ".join(coluna.ljust(larguras[i]) for i, coluna in enumerate(cabecalho))]
+    saida.append("  ".join("-" * largura for largura in larguras))
+    for registro in registros:
+        saida.append("  ".join(valor.ljust(larguras[i]) for i, valor in enumerate(registro)))
+    return saida
 
 
 def _tabela_l1(linhas: list[sqlite3.Row]) -> list[str]:

@@ -390,7 +390,7 @@ def test_codificacao_feliz_grava_catalogo_e_lote_com_assinatura(
     assert len(lote["prompt_sha256"]) == 64
     assert lote["prompt_versao"]
     assert lote["versao_agente"]
-    assert lote["schema_version"] == 10
+    assert lote["schema_version"] == 11
     assert lote["status"] == "concluido"
 
     eventos = tipos_eventos(politeness_veloz.manifesto)

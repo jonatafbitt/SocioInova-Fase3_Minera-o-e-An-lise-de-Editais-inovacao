@@ -47,3 +47,10 @@ respeitar_janela_off_peak = false
 # (limiar × nº de páginas). O OCR é decisão futura sob demanda: aqui só a
 # flag. Consumido pelo extrator único (texto.py, AD-11).
 limiar_chars_por_pagina = 100
+# Fase 3.1 (resgate por OCR): knobs do estágio opcional 'ocrescer'.
+# confiança_minima: página só entra no texto óptico se a confiança MÉDIA das
+# palavras ficar >= valor (0..100) — abaixo disso a página é descartada e,
+# se nenhuma página passar, o documento permanece escaneado.
+ocr_confianca_minima = 60
+# Idioma do tesseract (pack de idioma instalado no sistema, ex.: 'por').
+ocr_lang = "por"

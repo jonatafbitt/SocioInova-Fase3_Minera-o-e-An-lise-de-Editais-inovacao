@@ -15,6 +15,11 @@ from agente_editais.manifest import (
     _MIGRACAO_V3,
     _MIGRACAO_V4,
     _MIGRACAO_V5,
+    _MIGRACAO_V6,
+    _MIGRACAO_V7,
+    _MIGRACAO_V8,
+    _MIGRACAO_V9,
+    _MIGRACAO_V10,
     ENGINE_MINIMA,
     ErroAberturaManifesto,
     ErroEngineIncompativel,
@@ -55,7 +60,7 @@ def test_engine_no_minimo_passa(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sqlite3, "sqlite_version_info", ENGINE_MINIMA)
     manifesto = Manifesto(tmp_path / "m.sqlite3")
     try:
-        assert manifesto.schema_version() == 6  # v1..v5 (CAP-6 + CAP-3)
+        assert manifesto.schema_version() == 11  # v1..v7 (CAP-7 + CAP-3 + categorias)
     finally:
         manifesto.fechar()
 
@@ -101,7 +106,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
     primeira = Manifesto(caminho)
     try:
         assert primeira.consultar("PRAGMA journal_mode")[0][0] == "wal"
-        assert primeira.schema_version() == 6
+        assert primeira.schema_version() == 11
         objetos = primeira.consultar(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
         )
@@ -110,7 +115,7 @@ def test_wal_ativo_e_migracao_versionada_idempotente(tmp_path) -> None:
 
     segunda = Manifesto(caminho)
     try:
-        assert segunda.schema_version() == 6
+        assert segunda.schema_version() == 11
         assert (
             segunda.consultar(
                 "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') ORDER BY name"
@@ -148,7 +153,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 6
+        assert manifesto.schema_version() == 11
         assert manifesto.contar_instituicoes() == 1, "dados v1 preservados"
         assert manifesto.contar_portais() == 1
         # tabelas da v2/v3 utilizáveis imediatamente após a migração
@@ -160,7 +165,7 @@ def test_migracao_v1_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
     objetos_antes: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 6  # idempotente
+        assert reaberto.schema_version() == 11  # idempotente
         objetos_antes = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -210,7 +215,7 @@ def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 6
+        assert manifesto.schema_version() == 11
         assert manifesto.contar_candidatos() == 1, "candidatos v2 preservados"
         # v3 utilizável: retomada enxerga o candidato herdado
         pendentes = manifesto.candidatos_pdf_do_portal(1)
@@ -223,7 +228,7 @@ def test_migracao_v2_para_atual_preserva_dados_e_eh_idempotente(tmp_path) -> Non
     objetos_v3: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 6  # idempotente
+        assert reaberto.schema_version() == 11  # idempotente
         objetos_v3 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -279,7 +284,7 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 6  # migra até a versão atual
+        assert manifesto.schema_version() == 11  # migra até a versão atual
         colunas = {linha["name"] for linha in manifesto.consultar("PRAGMA table_info(documentos)")}
         assert {
             "texto_caminho",
@@ -311,7 +316,7 @@ def test_migracao_v3_para_v4_preserva_documentos_e_habilita_proveniencia(tmp_pat
     objetos_v4: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 6  # idempotente
+        assert reaberto.schema_version() == 11  # idempotente
         objetos_v4 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -390,7 +395,7 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 6
+        assert manifesto.schema_version() == 11
         colunas_documentos = {
             linha["name"] for linha in manifesto.consultar("PRAGMA table_info(documentos)")
         }
@@ -535,7 +540,7 @@ def test_migracao_v4_para_v5_preserva_documentos_e_habilita_fila(tmp_path) -> No
     objetos_v5: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 6  # idempotente
+        assert reaberto.schema_version() == 11  # idempotente
         objetos_v5 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -612,6 +617,302 @@ def _banco_v5_com_documento(caminho) -> None:
         bruto.close()
 
 
+def _banco_v6_com_categoria_legada(caminho) -> None:
+    """Banco da Story 8 (v6) com portal em categoria LEGADA 'prpgi_prppg'.
+
+    Reproduz o upgrade real: o schema v6 (CHECK antigo da v1 que ainda aceita
+    'prpgi_prppg') precisa passar pela v7 (recriação de ``portais`` com o mapa
+    de categorias) e pela v8 (varreduras/classificacoes) sem perder dados.
+    """
+    bruto = sqlite3.connect(caminho)
+    try:
+        for declaracao in (
+            *_MIGRACAO_V1,
+            *_MIGRACAO_V2,
+            *_MIGRACAO_V3,
+            *_MIGRACAO_V4,
+            *_MIGRACAO_V5,
+            *_MIGRACAO_V6,
+        ):
+            bruto.execute(declaracao)
+        bruto.execute(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('S8', 'Instituição Story 8', '2026-01-01T00:00:00+00:00')"
+        )
+        bruto.execute(
+            """
+            INSERT INTO portais (
+                id, instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 1, 'Portal S8', 'prpgi_prppg', 'http://s8.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO candidatos (portal_id, url, tipo, descoberto_em)
+            VALUES (1, 'http://s8.org/x.pdf', 'pdf', '2026-04-04T00:00:00+00:00')
+            """
+        )
+        bruto.execute("PRAGMA user_version = 6")
+        bruto.commit()
+    finally:
+        bruto.close()
+
+
+def _banco_v10_com_documento_escaneado(caminho) -> None:
+    """Banco da Fase 3.1 (v10) com portal, candidato e documento ESCANEADO.
+
+    Reproduz o upgrade real v10→v11: as colunas ``ocr_*`` NÃO existem e o
+    documento está com ``flag_escaneado=1`` (pypdf não extraiu nada). A v11 é
+    DDL puro — nada é tocado além das colunas novas + índice parcial.
+    """
+    bruto = sqlite3.connect(caminho)
+    try:
+        for declaracao in (
+            *_MIGRACAO_V1,
+            *_MIGRACAO_V2,
+            *_MIGRACAO_V3,
+            *_MIGRACAO_V4,
+            *_MIGRACAO_V5,
+            *_MIGRACAO_V6,
+            *_MIGRACAO_V7,
+            *_MIGRACAO_V8,
+            *_MIGRACAO_V9,
+            *_MIGRACAO_V10,
+        ):
+            bruto.execute(declaracao)
+        bruto.execute(
+            "INSERT INTO instituicoes (sigla, nome, criado_em) "
+            "VALUES ('OCR', 'Instituição OCR', '2026-01-01T00:00:00+00:00')"
+        )
+        bruto.execute(
+            """
+            INSERT INTO portais (
+                id, instituicao_id, nome, categoria, url, dinamico,
+                profundidade_maxima, criado_em
+            ) VALUES (1, 1, 'Portal OCR', 'integra', 'http://ocr.org', 0, 3,
+                      '2026-01-01T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO candidatos (portal_id, url, tipo, descoberto_em)
+            VALUES (1, 'http://ocr.org/x.pdf', 'pdf', '2026-04-04T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO editais (id, instituicao_id, ano_provisorio, criado_em)
+            VALUES ('ocr-v10-2026', 1, 2026, '2026-04-04T00:00:00+00:00')
+            """
+        )
+        bruto.execute(
+            """
+            INSERT INTO documentos (
+                id, edital_id, url_origem, caminho, hash_sha256, data_captura,
+                ano_provisorio, versao_crawler, flag_escaneado
+            ) VALUES ('ocr0123456789', 'ocr-v10-2026', 'http://ocr.org/x.pdf',
+                      'corpus/OCR/2026/ocr0123456789-x.pdf',
+                      ?, '2026-04-04T01:00:00+00:00', 2026, '0.1.0', 1)
+            """,
+            ("e" * 64,),
+        )
+        bruto.execute("PRAGMA user_version = 10")
+        bruto.commit()
+    finally:
+        bruto.close()
+
+
+def test_migracao_v11_adiciona_ocr_e_registra_proveniencia(tmp_path) -> None:
+    """Migração v10→v11: colunas ``ocr_*`` nascem NULL e o update de
+    proveniência completa o ciclo de resgate (retomável, idempotente).
+
+    O ``.txt`` (v4) e a proveniência OCR (v11) são atualizados SEPARADAMENTE
+    — primeiro o texto extraído zera a ``flag_escaneado``, depois o carimbo do
+    método/confiança/páginas trava o documento para os próximos ciclos.
+    """
+    caminho = tmp_path / "ocr.sqlite3"
+    _banco_v10_com_documento_escaneado(caminho)
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 11  # v11 aplicada
+        (documento,) = manifesto.consultar("SELECT * FROM documentos")
+        assert documento["flag_escaneado"] == 1
+        assert documento["ocr_em"] is None, "coluna v11 nasce NULL (nada tocado)"
+        assert documento["ocr_confianca_media"] is None
+        assert documento["ocr_paginas_resgatadas"] is None
+        assert documento["ocr_tentativas"] is None
+
+        # UPDATE da proveniência exige texto primero (registrar_texto_extraido)
+        assert (
+            manifesto.registrar_texto_extraido(
+                "ocr0123456789",
+                "http://ocr.org/x.pdf",
+                texto_caminho="corpus/OCR/2026/ocr0123456789-x.txt",
+                texto_chars=42,
+                texto_paginas=1,
+                flag_escaneado=False,
+            )
+            is True
+        )
+        assert (
+            manifesto.registrar_texto_ocr_proveniencia(
+                "ocr0123456789",
+                "http://ocr.org/x.pdf",
+                metodo="pypdfium2+tesseract",
+                confianca_media=87.5,
+                paginas_resgatadas=1,
+                tentativas=1,
+            )
+            is True
+        )
+
+        (linha,) = manifesto.consultar(
+            "SELECT flag_escaneado, ocr_em, ocr_metodo, ocr_confianca_media, "
+            "ocr_paginas_resgatadas, ocr_tentativas FROM documentos"
+        )
+        assert linha["flag_escaneado"] == 0, "flag zerada após o resgate validado"
+        assert linha["ocr_em"]
+        assert linha["ocr_metodo"] == "pypdfium2+tesseract"
+        assert linha["ocr_confianca_media"] == 87.5
+        assert linha["ocr_paginas_resgatadas"] == 1
+        assert linha["ocr_tentativas"] == 1
+
+        # registro contra linha inexistente NÃO é sucesso silencioso
+        assert (
+            manifesto.registrar_texto_ocr_proveniencia(
+                "nao-existe",
+                "http://ocr.org/x.pdf",
+                metodo="x",
+                confianca_media=10.0,
+                paginas_resgatadas=1,
+                tentativas=1,
+            )
+            is False
+        )
+    finally:
+        manifesto.fechar()
+
+    reaberto = Manifesto(caminho)  # retomável/idempotente: sem DDL refeito
+    try:
+        assert reaberto.schema_version() == 11
+        (linha,) = reaberto.consultar(
+            "SELECT ocr_em, ocr_confianca_media FROM documentos"
+        )
+        assert linha["ocr_em"] and linha["ocr_confianca_media"] == 87.5
+        indices = {
+            item["name"]
+            for item in reaberto.consultar(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='documentos'"
+            )
+        }
+        assert "idx_documentos_ocr" in indices, "índice parcial criado na v11"
+    finally:
+        reaberto.fechar()
+
+
+def test_migracao_v7_remapeia_categoria_legada_e_eh_retomavel(tmp_path) -> None:
+    """Upgrade v6→v8: categoria legada remapeia e a v7 é atômica/retomável.
+
+    ``prpgi_prppg`` vira ``prppg_inovacao``, a FK da tabela filha sobrevive à
+    recriação de ``portais`` e a reabertura é idempotente (user_version já no
+    alvo; nenhum DDL refeito).
+    """
+    caminho = tmp_path / "story8.sqlite3"
+    _banco_v6_com_categoria_legada(caminho)
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 11
+        (portal,) = manifesto.consultar("SELECT * FROM portais")
+        assert portal["categoria"] == "prppg_inovacao", "categoria legada remapeada"
+        assert portal["url"] == "http://s8.org"
+        (candidato,) = manifesto.consultar("SELECT * FROM candidatos")
+        assert candidato["url"] == "http://s8.org/x.pdf", "FK da filha preservada"
+        tabelas = {
+            linha["name"]
+            for linha in manifesto.consultar(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert {"varreduras", "classificacoes"} <= tabelas
+    finally:
+        manifesto.fechar()
+
+    reaberto = Manifesto(caminho)  # retomável: não refaz DDL da v7/v8
+    try:
+        assert reaberto.schema_version() == 11
+        (portal,) = reaberto.consultar("SELECT * FROM portais")
+        assert portal["categoria"] == "prppg_inovacao"
+    finally:
+        reaberto.fechar()
+
+
+def test_migracao_v7_falha_com_leitor_concorrente_erro_ocupado(tmp_path) -> None:
+    """Banco v6 com migração pendente + leitor concorrente → ErroManifestoOcupado.
+
+    O checkpoint WAL (TRUNCATE) em `_backup_pre_migracao` roda ANTES do
+    BEGIN EXCLUSIVE da v7. Se outro processo tem lock de leitura (BEGIN + SELECT),
+    o checkpoint reporta 'busy' e a migração aborta honestamente — melhor falhar
+    do que migrar a partir de estado não-materializado.
+    """
+    caminho = tmp_path / "v6_com_leitor.sqlite3"
+    _banco_v6_com_categoria_legada(caminho)
+
+    # Leitor concorrente: BEGIN IMMEDIATE + SELECT prende o WAL
+    leitor = sqlite3.connect(caminho)
+    leitor.execute("BEGIN IMMEDIATE")
+    leitor.execute("SELECT COUNT(*) FROM portais")
+
+    # Tentar abrir Manifesto (deve tentar migrar v7 → checkpoint busy → ErroManifestoOcupado)
+    with pytest.raises(ErroManifestoOcupado) as excinfo:
+        Manifesto(caminho)
+    # O checkpoint WAL (TRUNCATE) roda ANTES do lock exclusivo.
+    # Se o leitor tem lock IMMEDIATE, o checkpoint pode falhar com 'busy'
+    # ou o lock exclusivo pode falhar com 'database is locked'.
+    # Ambos resultam em ErroManifestoOcupado — o importante é que a migração
+    # NÃO prossegue com leitor concorrente ativo.
+    mensagem = str(excinfo.value).lower()
+    assert "checkpoint" in mensagem or "busy" in mensagem or "database is locked" in mensagem
+
+    # Libera leitor e reabre: agora a migração passa e schema vira 8
+    leitor.rollback()
+    leitor.close()
+
+    manifesto = Manifesto(caminho)
+    try:
+        assert manifesto.schema_version() == 11
+        (portal,) = manifesto.consultar("SELECT * FROM portais")
+        assert portal["categoria"] == "prppg_inovacao"
+    finally:
+        manifesto.fechar()
+
+
+def test_manifesto_no_schema_atual_abre_com_leitor_concorrente(tmp_path) -> None:
+    """Checkpoint de migração só dispara com migração PENDENTE (AD-3/AD-4).
+
+    Com o banco já na v8, abrir o Manifesto enquanto um leitor de outro
+    processo segura a leitura NÃO pode falhar com ErroManifestoOcupado —
+    ``wal_checkpoint(TRUNCATE)`` só roda antes de uma migração de verdade.
+    """
+    caminho = tmp_path / "atual.sqlite3"
+    primeiro = Manifesto(caminho)
+    primeiro.registrar_evento(tipo="boot", comando="teste")
+    primeiro.fechar()
+
+    leitor = sqlite3.connect(caminho)
+    try:
+        leitor.execute("BEGIN")
+        leitor.execute("SELECT COUNT(*) FROM eventos")  # lock de leitura ativo
+        with Manifesto(caminho) as m:
+            assert m.schema_version() == 11
+    finally:
+        leitor.rollback()
+        leitor.close()
+
+
 def test_migracao_v5_para_v6_preserva_dados_e_habilita_l2(tmp_path) -> None:
     """Banco da Story 5 (v5) abre na v6 com L1 intacto e o estágio L2 operante.
 
@@ -636,7 +937,7 @@ def test_migracao_v5_para_v6_preserva_dados_e_habilita_l2(tmp_path) -> None:
 
     manifesto = Manifesto(caminho)
     try:
-        assert manifesto.schema_version() == 6
+        assert manifesto.schema_version() == 11
         tabelas = {
             linha["name"]
             for linha in manifesto.consultar("SELECT name FROM sqlite_master WHERE type='table'")
@@ -768,7 +1069,7 @@ def test_migracao_v5_para_v6_preserva_dados_e_habilita_l2(tmp_path) -> None:
     objetos_v6: list | None = None
     reaberto = Manifesto(caminho)
     try:
-        assert reaberto.schema_version() == 6  # idempotente
+        assert reaberto.schema_version() == 11  # idempotente
         objetos_v6 = reaberto.consultar(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
@@ -1120,7 +1421,7 @@ def test_status_happy_path_exit0_com_contagens(cli, configs_reais_no_tmp) -> Non
     assert resultado.exit_code == 0, resultado.output
     saida = resultado.output + (resultado.stderr or "")
     assert "SQLite engine:" in saida
-    assert "Schema version:  6" in saida
+    assert "Schema version:  11" in saida
     assert re.search(r"Instituições:\s+\d+", saida)
     assert re.search(r"Portais:\s+\d+", saida)
     # contagens da descoberta visíveis no status

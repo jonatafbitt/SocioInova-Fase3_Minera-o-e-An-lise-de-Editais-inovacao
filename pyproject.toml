@@ -16,6 +16,21 @@ dependencies = [
     "typer==0.27.1",
     "PyYAML>=6.0.2,<7",
     "pandas>=2,<3",
+    "streamlit>=1.62.0",
+    "scikit-learn>=1.9.0",
+    "umap-learn>=0.5.12",
+    "plotly>=7.0.0",
+    "wordcloud>=1.9.6",
+]
+
+[project.optional-dependencies]
+# Fase 3.1: resgate por OCR ('ocrescer') — OPCIONAL de propósito (AD-12): a
+# base de instalação não puxa tesseract/pillow; só o comando exige o extra
+# sincronizado (uv sync --extra ocr) + binário Tesseract com pack de idioma.
+ocr = [
+    "pytesseract",                 # wrapper do binário Tesseract (exit 2 sem binário)
+    "pypdfium2",                   # render PDF->imagem, wheel puro, sem poppler
+    "Pillow",                      # imagem em memória para o reconhecimento
 ]
 
 [project.scripts]
@@ -124,7 +139,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 30
+fail_under = 50
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",

@@ -37,11 +37,13 @@ existe nesta story — aqui só a sinalização.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from pypdf import PdfReader
 
@@ -298,8 +300,9 @@ def textuar_portal(
     limiar_chars_por_pagina: int,
     *,
     comando: str = "textuar",
+    urls_restritas: set[str] | None = None,
 ) -> ResumoTextoPortal:
-    """Textura todos os Documentos de UM portal (lote idempotente, AD-1).
+    """Textura os Documentos de UM portal (lote idempotente, AD-1).
 
     Itera ``documentos`` ligados ao portal em ordem estável; cada documento
     concluído é uma transação própria — interrupção retoma exatamente dali.
@@ -309,12 +312,16 @@ def textuar_portal(
     da spec). Nota: registros-alias (``referencia_para``) têm o MESMO
     MESMO ``caminho``/hash do canônico e são processados como linhas próprias
     — o custo é re-parsear PDF raro (dedupe intra-portal); o ``.txt`` irmão é
-    um só e a regravação produz conteúdo idêntico.
+    um só e a regravação produz conteúdo idêntico. ``urls_restritas`` limita
+    o lote a um recorte de URLs (ex.: ``--varredura``) — as contagens do
+    resumo refletem SOMENTE o recorte.
     """
     rotulo = {"instituicao": contexto.instituicao_sigla, "portal": contexto.portal.nome}
     resumo = ResumoTextoPortal(contexto.instituicao_sigla, contexto.portal.nome)
 
     documentos = manifesto.documentos_do_portal(contexto.portal_id)
+    if urls_restritas is not None:
+        documentos = [d for d in documentos if d["url_origem"] in urls_restritas]
     for documento in documentos:
         resumo.documentos += 1
         url = documento["url_origem"]
@@ -330,5 +337,300 @@ def textuar_portal(
         tipo="texto_portal_concluida",
         comando=comando,
         detalhe={**rotulo, **resumo.totalizar()},
+    )
+    return resumo
+
+
+# -- resgate por OCR (Fase 3.1) ------------------------------------------------
+#
+# Estágio OPCIONAL e NÃO automático (decisão de design): NENHUM pipeline
+# dispara OCR — só o comando explícito ``ocrescer``. O texto de um PDF
+# escaneado entra no corpus quando um operador pede UM portal/lote. Retomável:
+# ``ocr_em`` preenchido ⇒ pulado no ciclo seguinte; o ``.txt`` irmão (AD-2:
+# artefato derivado) é sobrescrito com o texto óptico e a ``flag_escaneado`` é
+# zerada APENAS quando o resgate valida (limiar de confiança por página).
+# Engine: ``pypdfium2`` (render sem binário de sistema) + ``pytesseract``
+# (binário Tesseract + pack de idioma instalados fora do projeto) + Pillow.
+# As importações são opcionais — sem o extra 'ocr', o guard recusa com exit 2.
+
+
+class ErroOcrIndisponivel(RuntimeError):
+    """OCR indisponível: extra 'ocr' ausente OU binário tesseract/idioma."""
+
+
+def _importar_ocr() -> tuple[Any, Any, Any]:
+    """Importa o empilhamento OCR (tesseract, pdfium, PIL) — recusa com exit 2.
+
+    ``pytesseract`` é um wrapper fino sobre o binário Tesseract; ``pypdfium2``
+    renderiza páginas PDF→imagem SEM binários de sistema (roda no Windows e no
+    CI); Pillow é a imagem em memória. Faltou qualquer um ⇒ extra 'ocr' não
+    sincronizado (``uv sync --extra ocr``).
+    """
+    try:
+        pytesseract = importlib.import_module("pytesseract")
+        pdfium = importlib.import_module("pypdfium2")
+        pil = importlib.import_module("PIL")
+    except Exception as exc:
+        raise ErroOcrIndisponivel(
+            "OCR indisponível: faltam dependências do extra opcional "
+            "'ocr' (pytesseract + pypdfium2 + Pillow). Rode "
+            "`uv sync --extra ocr` antes de ocrescer."
+        ) from exc
+    return pytesseract, pdfium, pil
+
+
+def ocr_disponivel(idioma: str = "por") -> bool:
+    """True só se o empilhamento importa E o binário Tesseract responde E o
+    idioma está instalado. Chamado pelo guard do CLI UMA vez por lote."""
+    try:
+        pytesseract, _pdfium, _pil = _importar_ocr()
+    except ErroOcrIndisponivel:
+        return False
+    try:
+        return idioma in pytesseract.get_languages(config="")
+    except Exception:
+        return False
+
+
+def _renderizar_paginas(pdfium: Any, pil: Any, caminho_pdf: Path, escala: float = 2.0) -> list[Any]:
+    """Renderiza TODAS as páginas do PDF como PIL RGB (ppi = 72 × escala)."""
+    doc = pdfium.PdfDocument(str(caminho_pdf))
+    try:
+        paginas = []
+        for _indice in range(len(doc)):
+            imagem = doc[_indice].render(scale=escala).to_pil()
+            paginas.append(imagem.convert("RGB"))
+        return paginas
+    finally:
+        doc.close()
+
+
+def _ocr_uma_pagina(pytesseract: Any, imagem: Any, idioma: str) -> tuple[str, float]:
+    """Texto + confiança MÉDIA das palavras da página (0..100).
+
+    Palavras sem confiança (conf < 0) são descartadas da média e do texto —
+    o Tesseract sinaliza com -1 palavras que não pertencem a nenhuma linha.
+    """
+    dados = pytesseract.image_to_data(
+        imagem, lang=idioma, config="--psm 3", output_type=pytesseract.Output.DICT
+    )
+    palavras: list[str] = []
+    confiancas: list[float] = []
+    textos = dados.get("text") or []
+    confs = dados.get("conf") or []
+    for texto, conf in zip(textos, confs):
+        if not isinstance(texto, str) or not texto.strip():
+            continue
+        try:
+            valor = int(conf)
+        except (TypeError, ValueError):
+            continue
+        if valor < 0:
+            continue
+        palavras.append(texto)
+        confiancas.append(float(valor))
+    media = sum(confiancas) / len(confiancas) if confiancas else 0.0
+    return " ".join(palavras), media
+
+
+def resgatar_ocr_documento(
+    documento: sqlite3.Row,
+    manifesto: Manifesto,
+    *,
+    confianca_minima: int,
+    idioma: str,
+    tentativas: int = 1,
+    comando: str = "ocrescer",
+) -> str:
+    """OCR de UM Documento escaneado: ``.txt`` irmão + proveniência v11.
+
+    Desfechos (retomáveis como todo estágio):
+    - ``pulado``: documento já resgatado (``ocr_em`` preenchido) ou NÃO
+      escaneado — nada muda.
+    - ``erro``: PDF ausente, render falhou, gravação falhou ou UPDATE não
+      casou — evento ``texto_ocr_falhou`` e o lote segue.
+    - ``falhou``: todas as páginas ficaram abaixo do limiar de confiança —
+      flag permanece e o documento continua candidato (decisão explícita).
+    - ``resgatado``: texto óptico gravado, flag zerada e ``ocr_em`` carimbado.
+    """
+    documento_id = documento["id"]
+    url = documento["url_origem"]
+    rotulo = {"documento_id": documento_id, "url": url}
+    if documento["ocr_em"]:
+        # retomada idempotente: já resgatado NUNCA reprocessa (AD-1/AD-3)
+        return "pulado"
+    pdf = Path(documento["caminho"])
+    pdfium = importlib.import_module("pypdfium2")
+    pil = importlib.import_module("PIL")
+    pytesseract = importlib.import_module("pytesseract")
+
+    if not pdf.is_file():
+        manifesto.registrar_evento(
+            tipo="texto_ocr_falhou",
+            comando=comando,
+            detalhe={**rotulo, "fase": "arquivo_ausente", "caminho": str(pdf)},
+        )
+        return "erro"
+
+    try:
+        paginas_imagem = _renderizar_paginas(pdfium, pil, pdf)
+    except Exception as exc:
+        manifesto.registrar_evento(
+            tipo="texto_ocr_falhou",
+            comando=comando,
+            detalhe={**rotulo, "fase": "renderizacao", "erro": f"{type(exc).__name__}: {exc}"},
+        )
+        return "erro"
+
+    paginas_texto: list[str] = []
+    confiancas: list[float] = []
+    for imagem in paginas_imagem:
+        try:
+            texto_pagina, conf = _ocr_uma_pagina(pytesseract, imagem, idioma)
+        except Exception:
+            continue
+        if texto_pagina.strip() and conf >= confianca_minima:
+            paginas_texto.append(texto_pagina)
+            confiancas.append(conf)
+
+    if not paginas_texto:
+        manifesto.registrar_evento(
+            tipo="texto_ocr_falhou",
+            comando=comando,
+            detalhe={**rotulo, "fase": "confianca",
+                     "confianca_minima": confianca_minima, "idioma": idioma},
+        )
+        return "falhou"
+
+    texto = "\n".join(paginas_texto)
+    texto = texto.encode("utf-8", errors="replace").decode("utf-8")
+    chars = sum(len(p) for p in paginas_texto)
+    txt = caminho_txt_do(pdf)
+
+    try:
+        temporario = txt.with_name(f"{txt.name}.ocr-tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+        try:
+            temporario.write_bytes(texto.encode("utf-8"))
+            os.replace(temporario, txt)
+        finally:
+            temporario.unlink(missing_ok=True)
+    except OSError as exc:
+        manifesto.registrar_evento(
+            tipo="texto_ocr_falhou",
+            comando=comando,
+            detalhe={**rotulo, "fase": "gravacao_txt", "erro": f"{type(exc).__name__}: {exc}"},
+        )
+        return "erro"
+
+    persistiu = manifesto.registrar_texto_extraido(
+        documento_id,
+        url,
+        texto_caminho=str(txt),
+        texto_chars=chars,
+        texto_paginas=len(paginas_texto),
+        flag_escaneado=False,
+    )
+    if not persistiu:
+        manifesto.registrar_evento(
+            tipo="texto_ocr_falhou",
+            comando=comando,
+            detalhe={**rotulo, "fase": "persistencia"},
+        )
+        return "erro"
+    confianca_media = round(sum(confiancas) / len(confiancas), 1)
+    ocr_ok = manifesto.registrar_texto_ocr_proveniencia(
+        documento_id,
+        url,
+        metodo="pypdfium2+tesseract",
+        confianca_media=confianca_media,
+        paginas_resgatadas=len(paginas_texto),
+        tentativas=tentativas,
+    )
+    if not ocr_ok:
+        return "erro"
+    manifesto.registrar_evento(
+        tipo="texto_ocr_aplicado",
+        comando=comando,
+        detalhe={
+            **rotulo,
+            "txt": str(txt),
+            "chars": chars,
+            "paginas": len(paginas_texto),
+            "confianca_media": confianca_media,
+            "confianca_minima": confianca_minima,
+            "idioma": idioma,
+            "metodo": "pypdfium2+tesseract",
+        },
+    )
+    return "resgatado"
+
+
+@dataclass(slots=True)
+class ResumoOcrPortal:
+    """Contagens do resgate OCR de UM portal — vira saída CLI e evento."""
+
+    instituicao_sigla: str
+    portal_nome: str
+    escaneados: int = 0
+    resgatados: int = 0
+    falhas: int = 0
+    pulados: int = 0
+    urls_falhas: list[str] = field(default_factory=list)
+
+    def totalizar(self) -> dict:
+        return {
+            "escaneados": self.escaneados,
+            "resgatados": self.resgatados,
+            "falhas": self.falhas,
+            "pulados": self.pulados,
+            "urls_falhas": list(self.urls_falhas),
+        }
+
+
+def ocrescer_portal(
+    contexto: ContextoTexto,
+    manifesto: Manifesto,
+    *,
+    confianca_minima: int,
+    idioma: str,
+    tentativas: int = 1,
+    comando: str = "ocrescer",
+) -> ResumoOcrPortal:
+    """OCR dos Documentos ESCANEADOS de UM portal (lote idempotente, AD-1).
+
+    Só documentos com ``flag_escaneado`` entram no lote — texto já extraível
+    NUNCA volta (AD-11: o extrator único continua sendo o pypdf; OCR é resgate
+    exclusivo do que o pypdf não conseguiu). Já resgatados (``ocr_em``) pulam.
+    """
+    resumo = ResumoOcrPortal(contexto.instituicao_sigla, contexto.portal.nome)
+    for documento in manifesto.documentos_do_portal(contexto.portal_id):
+        url = documento["url_origem"]
+        if not documento["flag_escaneado"]:
+            resumo.pulados += 1
+            continue
+        resumo.escaneados += 1
+        resultado = resgatar_ocr_documento(
+            documento,
+            manifesto,
+            confianca_minima=confianca_minima,
+            idioma=idioma,
+            tentativas=tentativas,
+            comando=comando,
+        )
+        if resultado == "resgatado":
+            resumo.resgatados += 1
+        elif resultado in ("erro", "falhou"):
+            resumo.falhas += 1
+            resumo.urls_falhas.append(url)
+        else:
+            resumo.pulados += 1
+    manifesto.registrar_evento(
+        tipo="ocr_portal_concluida",
+        comando=comando,
+        detalhe={
+            "instituicao": contexto.instituicao_sigla,
+            "portal": contexto.portal.nome,
+            **resumo.totalizar(),
+        },
     )
     return resumo

@@ -44,6 +44,18 @@ decidido_ano)`` e origem explícita ``ano_fonte``, excluídos fora da
 listagem mas contáveis) e ``custodia_do_edital`` (cadeia captura →
 datação → fila montada inteira do banco — nenhum PDF é lido, AD-4).
 
+Story 8 adiciona a migração v7: ampliação das categorias de pró-reitoria.
+O CHECK fechado de ``portais.categoria`` muda (nova Story 8) e, como o SQLite
+não suporta ALTER de CHECK, a tabela ``portais`` é RECRIADA de forma segura
+(table rename + create + copy + drop) dentro da transação exclusiva de
+startup, preservando dados e FK via reconstrução dos índices de REFERENCIA
+(``PRAGMA foreign_keys=ON`` durante a migração exige ``legacy_alter_table``
+desligado pelos passos de rename/copy padrão do SQLite — a ordem "criar
+nova → copiar → drop antiga → rename" mantém as FKs das tabelas filhas
+apontando para o alvo físico correto). Antes de QUALQUER migração pendente,
+um backup de checkpoint é produzido (PRAGMA wal_checkpoint(TRUNCATE)) —
+a custódia do corpus nunca é tocada sem ponto de restauração.
+
 Story 7 adiciona a migração v6 (CAP-7): ``lotes_l2`` — assinatura COMPLETA
 do instrumento congelado por lote (FR-18/AD-6): modelo, versao_do_modelo,
 prompt_versao + prompt_sha256, temperatura, seed, codebook_sha256,
@@ -80,7 +92,7 @@ from agente_editais import __version__
 ENGINE_MINIMA = (3, 51, 3)
 LOCK_TIMEOUT_MS = 1_500
 
-SCHEMA_VERSAO_ATUAL = 6
+SCHEMA_VERSAO_ATUAL = 11
 
 # Cada declaração é executada isoladamente dentro da transação exclusiva de
 # startup — gatilhos têm ';' no corpo e não podem ser divididos por split.
@@ -306,6 +318,137 @@ _MIGRACAO_V6: tuple[str, ...] = (
     "CREATE INDEX idx_catalogo_l2_documento ON catalogo_l2(documento_id, url_origem)",
 )
 
+# Story 8 (categorias): o CHECK fechado da v1 não aceita os novos valores de
+# pró-reitoria. Como o SQLite não permite ALTER de CHECK, a tabela ``portais``
+# é recriada: tabela nova (mesmos nomes de coluna, CHECK ampliado), cópia da
+# v6 para a v7 (``prpgi_prppg`` → ``prppg_inovacao``), drop da antiga e rename.
+# A recriação é feita DENTRO da transação exclusiva de startup; as FKs das
+# tabelas filhas (``candidatos``/``secoes_visitadas``/``fila_revisao``) referem
+# ``portais(id)`` por nome de tabela. O runner desliga FKs temporariamente
+# antes de executar esta migração (o PRAGMA foreign_keys só tem efeito fora
+# de transação). A cópia reatribui a categoria antiga ao novo nome canônico.
+_MIGRACAO_V7: tuple[str, ...] = (
+    """
+    CREATE TABLE portais_v7 (
+        id                  INTEGER PRIMARY KEY,
+        instituicao_id      INTEGER NOT NULL REFERENCES instituicoes(id),
+        nome                TEXT NOT NULL,
+        categoria           TEXT NOT NULL
+            CHECK (categoria IN (
+                'integra', 'prppg_inovacao', 'extensao', 'ensino',
+                'reitoria', 'nit', 'agencia_inovacao'
+            )),
+        url                 TEXT NOT NULL UNIQUE,
+        dinamico            INTEGER NOT NULL DEFAULT 0 CHECK (dinamico IN (0, 1)),
+        profundidade_maxima INTEGER NOT NULL DEFAULT 3 CHECK (profundidade_maxima > 0),
+        criado_em           TEXT NOT NULL
+    )
+    """,
+    """
+    INSERT INTO portais_v7 (
+        id, instituicao_id, nome, categoria, url, dinamico,
+        profundidade_maxima, criado_em
+    )
+    SELECT id, instituicao_id, nome,
+           CASE categoria
+               WHEN 'prpgi_prppg' THEN 'prppg_inovacao'
+               ELSE categoria
+           END,
+           url, dinamico, profundidade_maxima, criado_em
+    FROM portais
+    """,
+    "DROP TABLE portais",
+    "ALTER TABLE portais_v7 RENAME TO portais",
+)
+
+# Story 9 (varredura sob demanda + classificação): ``varreduras`` é a fila de
+# URLs coladas (uma por URL — UNIQUE, AD-8; o portal de destino vem resolvido
+# por hostname contra o mapa-mestre). ``classificacoes`` guarda o veredito
+# ADVISORY do tipo de edital por ``url_origem`` (PK lógica) — ``metodo`` é a
+# chave do "não sobrescrever" (Never da story: re-classificação só preenche
+# quando o resultado é ``sem_texto``; nunca pisa ``metodo in ('texto','ancora')``).
+# Assim como ``referencia_para``, não há FK simples para ``documentos`` — a
+# linha do documento é COMPOSTA (id, url_origem); a integridade fica na camada
+# de classificação + testes.
+_MIGRACAO_V8: tuple[str, ...] = (
+    """
+    CREATE TABLE varreduras (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        url          TEXT NOT NULL UNIQUE,
+        portal_id    INTEGER NOT NULL REFERENCES portais(id),
+        status       TEXT NOT NULL DEFAULT 'pendente'
+                     CHECK (status IN ('pendente', 'rodando', 'concluida', 'falhou')),
+        log          TEXT NOT NULL DEFAULT '[]',
+        criado_em    TEXT NOT NULL,
+        iniciado_em  TEXT,
+        concluido_em TEXT
+    )
+    """,
+    "CREATE INDEX idx_varreduras_status ON varreduras(status)",
+    "CREATE INDEX idx_varreduras_portal ON varreduras(portal_id)",
+    """
+    CREATE TABLE classificacoes (
+        url_origem      TEXT PRIMARY KEY,
+        tipo_edital     TEXT NOT NULL
+                        CHECK (tipo_edital IN ('inovacao', 'nao_inovacao', 'sem_texto')),
+        metodo          TEXT NOT NULL
+                        CHECK (metodo IN ('texto', 'ancora', 'sem_texto')),
+        sinais          TEXT NOT NULL DEFAULT '[]',
+        dimensoes       TEXT NOT NULL DEFAULT '[]',
+        fonte_ancora    TEXT,
+        classificado_em TEXT NOT NULL,
+        CHECK (
+            (metodo = 'sem_texto' AND tipo_edital = 'sem_texto')
+            OR (metodo IN ('texto', 'ancora')
+                AND tipo_edital IN ('inovacao', 'nao_inovacao'))
+        )
+    )
+    """,
+    "CREATE INDEX idx_classificacoes_tipo ON classificacoes(tipo_edital)",
+)
+
+# Story 10 (Eixo 3 — Relevância e Impacto Social): adiciona colunas para
+# classificação do Eixo 3 na tabela classificacoes existente.
+# Colunas novas nascem com DEFAULT para não quebrar linhas existentes.
+_MIGRACAO_V9: tuple[str, ...] = (
+    """
+    ALTER TABLE classificacoes ADD COLUMN eixo3_classificacao TEXT
+        DEFAULT 'AUSENTE_SILENCIAMENTO'
+        CHECK (eixo3_classificacao IN ('IMPACTO_INSTRUMENTAL', 'IMPACTO_SUBSTANTIVO', 'AUSENTE_SILENCIAMENTO'))
+    """,
+    """
+    ALTER TABLE classificacoes ADD COLUMN eixo3_trecho_comprobatorio TEXT
+        DEFAULT ''
+    """,
+    "CREATE INDEX idx_classificacoes_eixo3 ON classificacoes(eixo3_classificacao)",
+)
+
+# Story da varredura integrada ao pipeline (rastreabilidade varredura→candidato):
+# ``varredura_id`` nasce NULL (candidatos do ``descobrir``/``coletar`` não têm
+# origem em varredura) e é preenchido APENAS no INSERT de um candidato NOVO
+# descoberto por ``varredura rodar`` — um candidato já conhecido do Mapa-Mestre
+# (dedupe por UNIQUE(portal_id,url)) NUNCA tem a origem reatribuída (a descoberta
+# original "vence"). O índice torna a consulta "candidatos de uma varredura"
+# O(1) para a exibição e o recorte ``--varredura`` dos estágios.
+_MIGRACAO_V10: tuple[str, ...] = (
+    "ALTER TABLE candidatos ADD COLUMN varredura_id INTEGER REFERENCES varreduras(id)",
+    "CREATE INDEX idx_candidatos_varredura ON candidatos(varredura_id)",
+)
+
+# Resgate por OCR dos documentos escaneados (CAP-6/AD-11, Fase 3.1): colunas
+# de proveniência do resgate opcional e NÃO automático (comando ``ocrescer``).
+# Nascem NULL; ``ocr_em`` preenchido é a trava de retomada (documento com OCR
+# aplicado NÃO é reprocessado). O ``.txt`` irmão continua o único artefato de
+# texto (AD-2); aqui só a proveniência. Índice parcial: só linhas com OCR.
+_MIGRACAO_V11: tuple[str, ...] = (
+    "ALTER TABLE documentos ADD COLUMN ocr_em TEXT",
+    "ALTER TABLE documentos ADD COLUMN ocr_metodo TEXT",
+    "ALTER TABLE documentos ADD COLUMN ocr_confianca_media REAL",
+    "ALTER TABLE documentos ADD COLUMN ocr_paginas_resgatadas INTEGER",
+    "ALTER TABLE documentos ADD COLUMN ocr_tentativas INTEGER",
+    "CREATE INDEX idx_documentos_ocr ON documentos(ocr_em) WHERE ocr_em IS NOT NULL",
+)
+
 MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (1, _MIGRACAO_V1),
     (2, _MIGRACAO_V2),
@@ -313,7 +456,25 @@ MIGRACOES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (4, _MIGRACAO_V4),
     (5, _MIGRACAO_V5),
     (6, _MIGRACAO_V6),
+    (7, _MIGRACAO_V7),
+    (8, _MIGRACAO_V8),
+    (9, _MIGRACAO_V9),
+    (10, _MIGRACAO_V10),
+    (11, _MIGRACAO_V11),
 )
+
+
+def _declaracoes_da_migracao(numero_alvo: int) -> tuple[str, ...]:
+    """Declarações da migração ``numero_alvo``, localizada pelo NUMERO.
+
+    Sempre busca pelo `numero` em ``MIGRACOES`` (nunca por posição literal):
+    adicionar/reordenar migrações não desalinha a v7/v8, que rodam em fluxos
+    próprios fora da transação de startup.
+    """
+    for numero, declaracoes in MIGRACOES:
+        if numero == numero_alvo:
+            return declaracoes
+    raise ValueError(f"migração v{numero_alvo} não registrada em MIGRACOES")
 
 
 # -- consulta L1 (CAP-9/UJ-3/§10): definição ÚNICA compartilhada pelas leituras
@@ -495,7 +656,18 @@ class Manifesto:
             modo = self._conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             if str(modo).lower() != "wal":
                 raise RuntimeError(f"Não foi possível ativar o modo WAL (journal_mode={modo!r}).")
+            # Backup de checkpoint ANTES de qualquer migração PENDENTE: força o
+            # descarregamento do WAL para o arquivo principal, produzindo um ponto
+            # de restauração físico antes de tocar o schema (a custódia nunca é
+            # migrada sem backup). Só roda quando há migração a aplicar — um
+            # Manifesto já no schema atual abre SEM checkpoint, permitindo leituras
+            # concorrentes (ex.: o dashboard, AD-3/AD-4). Executa FORA da transação
+            # EXCLUSIVE — wal_checkpoint não roda dentro de transação.
+            self._backup_pre_migracao()
             self._startup_exclusivo()
+        except ErroManifestoOcupado:
+            self.fechar()
+            raise
         except sqlite3.OperationalError as exc:
             self.fechar()
             raise ErroManifestoOcupado(
@@ -512,16 +684,39 @@ class Manifesto:
 
         Se outro processo estiver dentro do próprio handshake (ou da migração),
         o ``BEGIN EXCLUSIVE`` aqui falha rápido via busy_timeout.
+
+        Migrações v1..v6 e v8 rodam dentro da transação. Migração v7 (recria
+        portais com novo CHECK) desliga as FKs fora de transação (o PRAGMA
+        foreign_keys só tem efeito fora dela) e então roda na própria BEGIN
+        EXCLUSIVE — a recriação é atômica e retomável.
         """
+        # 1) Migrações v1..v6 dentro da transação exclusiva
         self._conn.execute("BEGIN EXCLUSIVE")
         try:
-            self._aplicar_migracoes_pendentes()
+            self._aplicar_migracoes_ate_v6()
         except BaseException:
             self._conn.execute("ROLLBACK")
             raise
         self._conn.execute("COMMIT")
 
-    def _aplicar_migracoes_pendentes(self) -> list[int]:
+        # 2) Migração v7 (se pendente) fora da transação com FKs desligadas
+        self._aplicar_migracao_v7_se_pendente()
+
+        # 3) Migração v8 (se pendente) dentro de transação exclusiva própria
+        # (DDL puro — varreduras/classificacoes; não precisa de PRAGMA off)
+        self._aplicar_migracao_v8_se_pendente()
+
+        # 4) Migração v9 (se pendente) — colunas Eixo 3
+        self._aplicar_migracao_v9_se_pendente()
+
+        # 5) Migração v10 (se pendente) — varredura_id em candidatos
+        self._aplicar_migracao_v10_se_pendente()
+
+        # 6) Migração v11 (se pendente) — proveniência OCR em documentos
+        self._aplicar_migracao_v11_se_pendente()
+
+    def _aplicar_migracoes_ate_v6(self) -> list[int]:
+        """Aplica migrações 1..6 dentro da transação exclusiva de startup."""
         linha = self._conn.execute("PRAGMA user_version").fetchone()
         versao_atual = int(linha[0])
         ultima_conhecida = MIGRACOES[-1][0]
@@ -535,12 +730,150 @@ class Manifesto:
         for numero, declaracoes in MIGRACOES:
             if numero <= versao_atual:
                 continue
+            if numero >= 7:
+                break  # v7+ rodam em fluxos próprios fora desta transação
             for declaracao in declaracoes:
                 self._conn.execute(declaracao)
             self._conn.execute(f"PRAGMA user_version = {numero}")
             versao_atual = numero
             aplicadas.append(numero)
         return aplicadas
+
+    def _aplicar_migracao_v7_se_pendente(self) -> None:
+        """Aplica migração v7 (recria ``portais``) de forma ATÔMICA e retomável.
+
+        As FKs são desligadas fora de transação (o PRAGMA foreign_keys só tem
+        efeito fora dela — é o que permite ``DROP TABLE portais`` com filhas);
+        depois os quatro passos da v7 rodam numa BEGIN EXCLUSIVE própria, junto
+        com o bump de ``user_version``. Um processo morto no meio não deixa
+        schema parcial: ou tudo (re)cria, ou nada — a próxima abertura retoma
+        do zero sem "already exists".
+        """
+        linha = self._conn.execute("PRAGMA user_version").fetchone()
+        versao_atual = int(linha[0])
+        if versao_atual >= 7:
+            return
+        # Desliga FKs para permitir DROP TABLE portais com tabelas filhas
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self._conn.execute("BEGIN EXCLUSIVE")
+            try:
+                for declaracao in _declaracoes_da_migracao(7):
+                    self._conn.execute(declaracao)
+                self._conn.execute("PRAGMA user_version = 7")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
+
+    def _aplicar_migracao_v8_se_pendente(self) -> None:
+        """Aplica migração v8 (varreduras/classificacoes) numa transação própria.
+
+        A v7 precisa de FKs desligadas (recria ``portais``), então a v8 — um
+        DDL puro de tabelas novas — roda DEPOIS dela num ``BEGIN EXCLUSIVE``
+        próprio, sempre dentro do fluxo exclusivo de startup (Design Notes).
+        """
+        linha = self._conn.execute("PRAGMA user_version").fetchone()
+        if int(linha[0]) >= 8:
+            return
+        self._conn.execute("BEGIN EXCLUSIVE")
+        try:
+            for declaracao in _declaracoes_da_migracao(8):
+                self._conn.execute(declaracao)
+            self._conn.execute("PRAGMA user_version = 8")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
+
+    def _aplicar_migracao_v9_se_pendente(self) -> None:
+        """Aplica migração v9 (colunas Eixo 3 em classificacoes).
+
+        DDL puro (ALTER TABLE ADD COLUMN) — roda depois da v8 numa transação
+        EXCLUSIVE própria, dentro do fluxo de startup.
+        """
+        linha = self._conn.execute("PRAGMA user_version").fetchone()
+        if int(linha[0]) >= 9:
+            return
+        self._conn.execute("BEGIN EXCLUSIVE")
+        try:
+            for declaracao in _declaracoes_da_migracao(9):
+                self._conn.execute(declaracao)
+            self._conn.execute("PRAGMA user_version = 9")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
+
+    def _aplicar_migracao_v10_se_pendente(self) -> None:
+        """Aplica migração v10 (varredura_id em candidatos).
+
+        DDL puro (ALTER TABLE ADD COLUMN + índice) — roda depois da v9 numa
+        transação EXCLUSIVE própria, dentro do fluxo de startup. Candidatos
+        existentes nascem com ``varredura_id`` NULL (origem em varredura não é
+        retro-inferida — AD-1: re-execuções não reatribuem origem).
+        """
+        linha = self._conn.execute("PRAGMA user_version").fetchone()
+        if int(linha[0]) >= 10:
+            return
+        self._conn.execute("BEGIN EXCLUSIVE")
+        try:
+            for declaracao in _declaracoes_da_migracao(10):
+                self._conn.execute(declaracao)
+            self._conn.execute("PRAGMA user_version = 10")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
+
+    def _aplicar_migracao_v11_se_pendente(self) -> None:
+        """Aplica migração v11 (proveniência OCR em documentos).
+
+        DDL puro (ALTER TABLE ADD COLUMN + índice parcial) — roda depois da
+        v10 numa transação EXCLUSIVE própria, dentro do fluxo de startup.
+        Colunas nascem NULL; nenhum dado existente é tocado.
+        """
+        linha = self._conn.execute("PRAGMA user_version").fetchone()
+        if int(linha[0]) >= 11:
+            return
+        self._conn.execute("BEGIN EXCLUSIVE")
+        try:
+            for declaracao in _declaracoes_da_migracao(11):
+                self._conn.execute(declaracao)
+            self._conn.execute("PRAGMA user_version = 11")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
+
+    def _backup_pre_migracao(self) -> None:
+        """Materializa o WAL no arquivo principal antes de migrar.
+
+        ``PRAGMA wal_checkpoint(TRUNCATE)`` descarrega as páginas pendentes do
+        WAL para o arquivo ``manifesto.sqlite3`` e trunca o WAL — assim o estado
+        pré-migração fica "fisicamente" no arquivo principal (o checkpoint NÃO é
+        uma cópia de segurança externa; a frota deve fazer o próprio .bak). Só é
+        chamado quando há migração pendente (``user_version`` abaixo do schema
+        conhecido): um Manifesto já no schema atual abre SEM checkpoint, então
+        leitores concorrentes (ex.: o dashboard) coexistem com o CLI no dia a
+        dia. Se o checkpoint reportar erro (busy de outro leitor), a migração
+        não prossegue — melhor falhar do que migrar a partir de um estado
+        não-materializado.
+        """
+        linha = self._conn.execute("PRAGMA user_version").fetchone()
+        versao_atual = int(linha[0])
+        if versao_atual >= MIGRACOES[-1][0]:
+            return
+        resultado = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        # retorno: (busy, log, checkpointed) — busy ≠ 0 significa não concluído
+        if not resultado or int(resultado[0]) != 0:
+            raise ErroManifestoOcupado(
+                "Outro processo está executando um comando sobre este Manifesto "
+                f"({self.caminho}). wal_checkpoint(TRUNCATE) não concluiu antes da "
+                f"migração (busy={resultado}): o Manifesto está em uso por um leitor."
+            )
 
     def _garantir_aberto(self) -> sqlite3.Connection:
         if getattr(self, "_conn", None) is None:
@@ -617,6 +950,220 @@ class Manifesto:
             (limite,),
         )
 
+    # -- varredura sob demanda (CAP-9/story varredura) — migração v8 ---------
+
+    def varredura_adicionar(self, url: str, portal_id: int) -> bool:
+        """Registra uma URL colada para varredura; True se inserida.
+
+        ``UNIQUE(url)`` impõe "uma varredura por URL" NO BANCO (AD-8):
+        re-adicionar a mesma URL retorna False e o chamador avisa, sem
+        duplicata (matriz I/O: URL duplicada → INSERT ignorado + aviso).
+        """
+        self._garantir_aberto()
+        cursor = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO varreduras (url, portal_id, status, log, criado_em)
+            VALUES (?, ?, 'pendente', '[]', ?)
+            """,
+            (url, portal_id, agora_iso_utc()),
+        )
+        return cursor.rowcount > 0
+
+    def varredura_por_id(self, id: int) -> sqlite3.Row | None:
+        """Linha de varredura com o contexto do portal ligado.
+
+        O Portal sintético da execução nasce daqui (Design Notes): url/nome/
+        categoria/dinamico/profundidade_maxima herdados do portal ligado, com a
+        URL colada como url/seeds — o banco NÃO ganha linha nova de portal.
+        """
+        linhas = self.consultar(
+            """
+            SELECT v.*, p.url AS portal_url, p.nome AS portal_nome,
+                   p.categoria AS portal_categoria,
+                   p.dinamico AS portal_dinamico,
+                   p.profundidade_maxima AS portal_profundidade_maxima,
+                   i.sigla AS instituicao_sigla
+            FROM varreduras v
+            JOIN portais p ON p.id = v.portal_id
+            JOIN instituicoes i ON i.id = p.instituicao_id
+            WHERE v.id = ?
+            """,
+            (id,),
+        )
+        return linhas[0] if linhas else None
+
+    def varreduras_por_status(self, status: str | None = None) -> list[sqlite3.Row]:
+        """Linhas de varredura com contexto do portal, na ordem de criação.
+
+        ``status=None`` lista todos; senão só o status pedido. Cada linha traz
+        também o contexto do portal ligado (categoria/dinamico/profundidade —
+        o Portal sintético da execução nasce daqui) e a sigla da instituição.
+        Leitura ONLY (AD-3).
+        """
+        sql = """
+            SELECT v.*, p.url AS portal_url, p.nome AS portal_nome,
+                   p.categoria AS portal_categoria,
+                   p.dinamico AS portal_dinamico,
+                   p.profundidade_maxima AS portal_profundidade_maxima,
+                   i.sigla AS instituicao_sigla
+            FROM varreduras v
+            JOIN portais p ON p.id = v.portal_id
+            JOIN instituicoes i ON i.id = p.instituicao_id
+        """
+        if status is None:
+            return self.consultar(f"{sql} ORDER BY v.id")
+        return self.consultar(f"{sql} WHERE v.status = ? ORDER BY v.id", (status,))
+
+    def marcar_varredura_iniciada(self, id: int, *, forcar: bool = False) -> bool:
+        """Leva a varredura a 'rodando' (CAS, AD-3) e diz se ela foi reclamada.
+
+        Sem ``forcar`` só reclama de ``'pendente'``: se outro processo já levou
+        a linha a ``'rodando'``, retorna False e o comando pula — nada de rede
+        tocada em duplicidade. Com ``forcar`` (``rodar --id``) reclama também
+        ``'rodando'``/``'concluida'``/``'falhou'``: é a re-execução explícita e
+        a recuperação de varreduras travadas por processo morto (o lock
+        EXCLUSIVE do startup não cobre a execução, então só o ``--id``
+        re-executa). ``iniciado_em`` é renovado para refletir a rodada atual e
+        re-executar segue idempotente (AD-1).
+        """
+        condicao = "" if forcar else " AND status = 'pendente'"
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                f"UPDATE varreduras SET status = 'rodando', iniciado_em = ? "
+                f"WHERE id = ?{condicao}",
+                (agora_iso_utc(), id),
+            )
+            return cursor.rowcount > 0
+
+    def marcar_varredura_concluida(self, id: int, resumo: dict | None = None) -> bool:
+        """Registra o resumo da rodada (JSON em ``log``) e encerra em 'concluida'."""
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE varreduras
+                SET status = 'concluida', log = ?, concluido_em = ?
+                WHERE id = ? AND status = 'rodando'
+                """,
+                (
+                    json.dumps(resumo or {}, ensure_ascii=False, default=str),
+                    agora_iso_utc(),
+                    id,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def marcar_varredura_falhou(self, id: int, erro: str) -> bool:
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE varreduras SET status = 'falhou', log = ?, concluido_em = ?
+                WHERE id = ? AND status = 'rodando'
+                """,
+                (json.dumps({"erro": erro}, ensure_ascii=False), agora_iso_utc(), id),
+            )
+            return cursor.rowcount > 0
+
+    # -- classificação do tipo de edital (story classificação) — migração v8 ---
+
+    def classificacao_obter(self, url_origem: str) -> sqlite3.Row | None:
+        linhas = self.consultar(
+            "SELECT * FROM classificacoes WHERE url_origem = ?", (url_origem,)
+        )
+        return linhas[0] if linhas else None
+
+    def classificacao_registrar(
+        self,
+        *,
+        url_origem: str,
+        tipo_edital: str,
+        metodo: str,
+        sinais: list[str] | None = None,
+        dimensoes: list[str] | None = None,
+        fonte_ancora: str | None = None,
+        eixo3_classificacao: str | None = None,
+        eixo3_trecho_comprobatorio: str | None = None,
+    ) -> bool:
+        """Grava o veredito ADVISORY de uma URL (INSERT OR REPLACE).
+
+        A política de sobrescrita vive na camada de classificação ("já
+        classificado com método textual/âncora nunca é pisado; 'sem_texto'
+        pode ser preenchido depois"); aqui o banco só impõe o CHECK lógico
+        tipo_edital × metodo.
+        """
+        if tipo_edital not in ("inovacao", "nao_inovacao", "sem_texto"):
+            raise ValueError(f"tipo_edital inválido: {tipo_edital!r}")
+        if metodo not in ("texto", "ancora", "sem_texto"):
+            raise ValueError(f"metodo inválido: {metodo!r}")
+        if eixo3_classificacao is not None and eixo3_classificacao not in (
+            "IMPACTO_INSTRUMENTAL", "IMPACTO_SUBSTANTIVO", "AUSENTE_SILENCIAMENTO"
+        ):
+            raise ValueError(f"eixo3_classificacao inválida: {eixo3_classificacao!r}")
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR REPLACE INTO classificacoes (
+                    url_origem, tipo_edital, metodo, sinais, dimensoes,
+                    fonte_ancora, classificado_em,
+                    eixo3_classificacao, eixo3_trecho_comprobatorio
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    url_origem,
+                    tipo_edital,
+                    metodo,
+                    json.dumps(list(sinais or []), ensure_ascii=False),
+                    json.dumps(list(dimensoes or []), ensure_ascii=False),
+                    fonte_ancora,
+                    agora_iso_utc(),
+                    eixo3_classificacao or "AUSENTE_SILENCIAMENTO",
+                    eixo3_trecho_comprobatorio or "",
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def documentos_para_classificar(
+        self, portal_id: int | None = None, *, url_origem: str | None = None
+    ) -> list[sqlite3.Row]:
+        """Documentos com ``texto_ancora`` (da FR-6) e exclusão vigente.
+
+        - entrada via candidatos tipo 'pdf' do portal, com ``MAX(texto_ancora)``
+          agrupado por URL (mata fan-out de candidatos repetidos);
+        - ``excluido_vigente`` vem da MESMA linha vigente da fila de revisão
+          (resolução vence pendência; id maior entre resolvidas — padrão da
+          story 4): a classificação NUNCA vê documento que a curadoria já
+          excluiu ('não publicar') — e o veredito segue ADVISORY, nunca exclui;
+        - ``portal_id=None, url_origem=...`` resolve um documento individual
+          (comando ``classificar --documento URL``).
+        """
+        from_sub = """
+                SELECT url, MAX(texto_ancora) AS texto_ancora,
+                       MIN(portal_id) AS portal_id
+                FROM candidatos
+                WHERE tipo = 'pdf'
+        """
+        params: list[object] = []
+        if portal_id is not None:
+            from_sub += " AND portal_id = ?"
+            params.append(portal_id)
+        from_sub += "\n                GROUP BY url"
+
+        sql = f"""
+            SELECT d.*, c.texto_ancora AS texto_ancora,
+                   COALESCE(f.decidido_exclusao, 0) AS excluido_vigente,
+                   ins.sigla AS instituicao_sigla, po.nome AS portal_nome
+            FROM documentos d
+            JOIN ({from_sub}) c ON c.url = d.url_origem
+            LEFT JOIN ({_FILA_VIGENTE}) fv ON fv.url_origem = d.url_origem
+            LEFT JOIN fila_revisao f ON f.id = fv.id_fila_vigente
+            LEFT JOIN portais po ON po.id = c.portal_id
+            LEFT JOIN instituicoes ins ON ins.id = po.instituicao_id
+        """
+        if url_origem is not None:
+            sql += " WHERE d.url_origem = ?"
+            params.append(url_origem)
+        sql += " ORDER BY d.rowid"
+        return self.consultar(sql, tuple(params))
+
     # -- descoberta (CAP-2, migração v2) ------------------------------------
 
     def id_portal_por_url(self, url: str) -> int | None:
@@ -646,7 +1193,13 @@ class Manifesto:
         return cursor.rowcount > 0
 
     def registrar_candidato(
-        self, portal_id: int, url: str, tipo: str, *, texto_ancora: str | None = None
+        self,
+        portal_id: int,
+        url: str,
+        tipo: str,
+        *,
+        texto_ancora: str | None = None,
+        varredura_id: int | None = None,
     ) -> bool:
         """Registra candidato a edital dedupe por UNIQUE(portal_id,url); True se novo.
 
@@ -656,7 +1209,10 @@ class Manifesto:
         âncora integral (TEXT livre) desde a descoberta (FR-6); numa
         RE-DESCOBERTA o upsert preenche a âncora só quando ela ainda é NULL
         — corpus antigo sem âncora é retroalimentado e uma âncora já gravada
-        NUNCA é sobrescrita.
+        NUNCA é sobrescrita. ``varredura_id`` (v10) é gravado APENAS no INSERT
+        de um candidato NOVO descoberto por ``varredura rodar``: um candidato
+        já existente (do ``descobrir``/``coletar``) não é reatribuído, pois a
+        varredura não foi quem o injetou no pipeline.
         """
         if tipo not in ("pdf", "pagina_edital"):
             raise ValueError(f"tipo de candidato inválido: {tipo!r} (esperado pdf|pagina_edital)")
@@ -667,14 +1223,31 @@ class Manifesto:
         ).fetchone()
         cursor = conn.execute(
             """
-            INSERT INTO candidatos (portal_id, url, tipo, texto_ancora, descoberto_em)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO candidatos (portal_id, url, tipo, texto_ancora, varredura_id, descoberto_em)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(portal_id, url) DO UPDATE
             SET texto_ancora = COALESCE(texto_ancora, excluded.texto_ancora)
             """,
-            (portal_id, url, tipo, texto_ancora, agora_iso()),
+            (portal_id, url, tipo, texto_ancora, varredura_id, agora_iso()),
         )
         return existente is None and cursor.rowcount > 0
+
+    def candidatos_de_varredura(self, varredura_id: int) -> list[sqlite3.Row]:
+        """Candidatos descobertos por uma varredura (v10), na ordem de descoberta.
+
+        Leitura ONLY (AD-3). Alimenta a exibição da aba de varredura e o
+        recorte ``--varredura`` dos estágios do pipeline (coletar/textuar/
+        datar/classificar/eixo3).
+        """
+        return self.consultar(
+            """
+            SELECT c.id, c.url, c.tipo, c.texto_ancora, c.descoberto_em
+            FROM candidatos c
+            WHERE c.varredura_id = ?
+            ORDER BY c.id
+            """,
+            (varredura_id,),
+        )
 
     def contar_candidatos(self, portal_id: int | None = None) -> int:
         if portal_id is None:
@@ -824,6 +1397,44 @@ class Manifesto:
                     texto_paginas,
                     1 if flag_escaneado else 0,
                     agora_iso_utc(),
+                    documento_id,
+                    url_origem,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def registrar_texto_ocr_proveniencia(
+        self,
+        documento_id: str,
+        url_origem: str,
+        *,
+        metodo: str,
+        confianca_media: float | None,
+        paginas_resgatadas: int,
+        tentativas: int,
+    ) -> bool:
+        """UPDATE das colunas de proveniência do resgate por OCR (v11).
+
+        Chamada DEPOIS de ``registrar_texto_extraido`` (v4 preenche o ``.txt``
+        e zera a ``flag_escaneado``): as colunas ``ocr_*`` carimbam o método,
+        a confiança média das páginas aceitas e a retomada (``ocr_em`` virou a
+        trava do ciclo). Retorna True só se a linha casou — 0 linhas NÃO é
+        sucesso silencioso.
+        """
+        with self.transacao() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE documentos
+                SET ocr_em = ?, ocr_metodo = ?, ocr_confianca_media = ?,
+                    ocr_paginas_resgatadas = ?, ocr_tentativas = ?
+                WHERE id = ? AND url_origem = ?
+                """,
+                (
+                    agora_iso_utc(),
+                    metodo,
+                    confianca_media,
+                    paginas_resgatadas,
+                    tentativas,
                     documento_id,
                     url_origem,
                 ),
