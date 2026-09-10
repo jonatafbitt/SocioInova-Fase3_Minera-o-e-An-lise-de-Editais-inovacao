@@ -170,6 +170,8 @@ As métricas gerais no topo (Documentos, Instituições, Anos, Total de caracter
 
 *[Cientista de dados]* `CountVectorizer` (unigramas ou bigramas) com stopwords PT e limpeza multiword, ordenado por frequência; `WordCloud.generate_from_frequencies` renderiza o top-N. Parâmetros: unidade, máximo de palavras, frequência mínima, colormap, instituição (Todas ou específica).
 
+**Dicionário de stopwords (v3).** O filtro combina (a) base gramatical do português, (b) camada expandida de boilerplate de editais (seleção, homologação, coordenadoria, cronograma…) e (c) camada domínio-específica SocioInova — siglas e genéricos da rede federal (`ifba`, `utfpr`, `mec`, `setec`, `campus`, `reitoria`…), burocracia normativa (`caput`, `diário oficial`, `considerando`, `disposto`…), temporalidade e formulário (meses, `cpf`, `cnpj`, `prazo`…), artefatos digitais (URLs, `gov`, `edu`…) e formas verbais frequentes (poder, dever, realizar…), mantidas também na variante sem acento para o texto resgatado por OCR. Termos analíticos de interesse (inovação, comunidade, território, licenciamento…) são preservados — a ficha técnica da sidebar registra a versão e o total de termos (rastreabilidade).
+
 *[Cientista social]* A nuvem é uma **primeira impressão visual do vocabulário dominante**. O tamanho da palavra = frequência. É o mais acessível dos recursos, mas também o mais vulnerável a viés: palavras curtas e polissêmicas podem dominar sem relevância analítica, e a ausência de palavras não é visível. Serve para **gerar hipóteses** (que terminologia um IF privilegia?) e para comunicar resultados a não especialistas, nunca como evidência isolada.
 
 ---

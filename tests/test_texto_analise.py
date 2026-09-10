@@ -17,7 +17,7 @@ from agente_editais.texto_analise import (
 class TestStopwordsVersao:
     def test_stopwords_versao_existe(self):
         assert isinstance(STOPWORDS_VERSAO, int)
-        assert STOPWORDS_VERSAO >= 2
+        assert STOPWORDS_VERSAO >= 3
 
     def test_conectivos_versao_existe(self):
         assert isinstance(CONECTIVOS_VERSAO, int)
@@ -80,6 +80,105 @@ class TestStopwordsConteudo:
     ])
     def test_termos_interesse_nao_removidos(self, keep):
         assert keep not in STOPWORDS_PT
+
+
+class TestStopwordsSocioinova:
+    """Camada domínio-específica portada da curadoria (institucional, OCR)."""
+
+    @pytest.mark.parametrize("norm", [
+        "caput", "apêndice", "dou", "diário", "oficial", "sei",
+        "número", "vigor", "revogadas", "disposições", "cumprimento",
+        "regulamento", "minuta", "despacho", "considerando", "resolve",
+        "estabelece", "certame", "constante", "disposto", "art",
+    ])
+    def test_burocracia_normativa(self, norm):
+        assert norm in STOPWORDS_PT
+
+    @pytest.mark.parametrize("inst", [
+        "instituto", "federal", "campus", "campi", "reitoria",
+        "reitor", "reitora", "diretora", "pró", "coordenadoria",
+        "departamento", "ministério", "mec", "setec", "conif",
+        "ifba", "ifes", "ifrj", "ifsp", "ifpe", "ifrn", "ifce",
+        "ifpb", "ifal", "ifs", "ifpi", "ifma", "ifto", "ifpa",
+        "ifap", "ifac", "ifam", "ifrr", "ifro", "ifmt", "ifms",
+        "ifg", "ifgoiano", "ifb", "ifsc", "ifsul", "ifpr", "ifc",
+        "cefet", "utfpr", "cp2", "ufba", "ufrb",
+    ])
+    def test_institucional_siglas(self, inst):
+        assert inst in STOPWORDS_PT
+
+    @pytest.mark.parametrize("acad", [
+        "resumo", "abstract", "introdução", "metodologia", "conclusão",
+        "referências", "bibliografia", "keywords", "palavras", "chave",
+        "autor", "autores", "et", "al", "vol", "edição", "editora",
+        "universidade", "faculdade", "tese", "dissertação", "periódico",
+        "revista", "doi",
+    ])
+    def test_academico_citacao(self, acad):
+        assert acad in STOPWORDS_PT
+
+    @pytest.mark.parametrize("temporal", [
+        "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+        "ano", "mês", "dia", "data", "horas", "hrs", "cpf", "cnpj",
+        "cep", "rg", "local",
+    ])
+    def test_temporal_formulario(self, temporal):
+        assert temporal in STOPWORDS_PT
+
+    @pytest.mark.parametrize("artefato", [
+        "cid", "www", "http", "https", "br", "gov", "edu", "org",
+        "com", "página",
+    ])
+    def test_artefatos_digitais_ocr(self, artefato):
+        assert artefato in STOPWORDS_PT
+
+    @pytest.mark.parametrize("verb", [
+        "fazer", "fez", "fazem", "dever", "podem", "ter", "tendo",
+        "haver", "houver", "promover", "promoverá", "criar", "criado",
+        "apresentar", "apresentado", "enviar", "através",
+    ])
+    def test_verbos_comuns_adicionais(self, verb):
+        assert verb in STOPWORDS_PT
+
+    # Variantes sem acento (texto resgatado por OCR chega sem diacríticos)
+    @pytest.mark.parametrize("sem_acento", [
+        "apendice", "diario", "numero", "disposicoes", "ministerio",
+        "introducao", "conclusao", "edicao", "dissertacao", "periodico",
+        "marco", "mes", "pagina", "promovera", "atraves",
+    ])
+    def test_variantes_sem_acento_ocr(self, sem_acento):
+        assert sem_acento in STOPWORDS_PT
+
+    def test_integracao_countvectorizer_remove_sigla_e_mes(self):
+        from sklearn.feature_extraction.text import CountVectorizer
+
+        from agente_editais.texto_analise import STOPWORDS_PT, TOKEN_PATTERN, limpar_texto
+
+        texto = (
+            "o edital do ifba publicado em março no diário oficial "
+            "fomenta inovação tecnológica nas comunidades"
+        )
+        docs = [limpar_texto(texto)]
+        vec = CountVectorizer(
+            ngram_range=(1, 1),
+            stop_words=list(STOPWORDS_PT),
+            token_pattern=TOKEN_PATTERN,
+            lowercase=True,
+        )
+        vec.fit_transform(docs)
+        termos = set(vec.get_feature_names_out())
+
+        assert "ifba" not in termos
+        assert "março" not in termos
+        assert "diário" not in termos
+        assert "oficial" not in termos
+        assert "edital" not in termos
+        assert "publicado" not in termos
+        assert "fomenta" in termos
+        assert "inovação" in termos
+        assert "tecnológica" in termos
+        assert "comunidades" in termos
 
 
 class TestConectivosMultiword:

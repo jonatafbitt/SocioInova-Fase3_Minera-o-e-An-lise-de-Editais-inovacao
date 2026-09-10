@@ -1,8 +1,15 @@
 """Dicionário e utilidades de limpeza textual para análise de editais.
 
 Expansão da lista de stopwords e conectivos multiword para remover
-verbos, conjunções, preposições e boilerplate de editais de nuvens
-e funções de análise textual.
+verbos, conjunções, preposições, boilerplate de editais, termos
+institucionais da rede federal, temporalidade e artefatos digitais/OCR
+de nuvens e funções de análise textual.
+
+As stopwords são mantidas na forma acentuada (é assim que o texto
+normalizado do corpus chega ao CountVectorizer) e, para os termos
+domínio-específicos provenientes da curadoria SocioInova, também na
+variante sem acento — cobre o texto resgatado por OCR, que pode chegar
+sem diacríticos.
 """
 
 from __future__ import annotations
@@ -16,7 +23,7 @@ TOKEN_PATTERN = r"(?u)\b[^\W\d_]\w+\b"
 # ──────────────────────────────────────────────────────────────────────────────
 # Versões (rastreabilidade — directive 404)
 # ──────────────────────────────────────────────────────────────────────────────
-STOPWORDS_VERSAO: int = 2
+STOPWORDS_VERSAO: int = 3
 CONECTIVOS_VERSAO: int = 1
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -79,8 +86,43 @@ termo termos termo de referência termo-de-referência
 cronograma cronogramas etapa etapas
 """
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Camada domínio-específica (curadoria SocioInova): institucional da rede
+# federal, burocracia normativa, acadêmico/citação, temporal e artefatos
+# digitais/OCR. Portada com acentuação correta (+ variante sem acento, útil
+# para texto resgatado por OCR). Não repete termos já cobertos na camada
+# expandida acima. A string contém só palavras — sem comentários, para não
+# vazar tokens ao .split().
+# ──────────────────────────────────────────────────────────────────────────────
+_STOPWORDS_SOCIOINOVA = """
+caput apêndice apendice dou diário diario oficial sei nº número numero
+vigor revogam revogadas disposições disposicoes cumprimento regulamento
+minuta despacho considerando resolve estabelece certame constante
+disposto art
+
+instituto federal campus campi reitoria reitor reitora diretora pró pro
+coordenadoria departamento ministério ministerio mec setec conif ifba
+ifes ifrj ifsp ifpe ifrn ifce ifpb ifal ifs ifpi ifma ifto ifpa ifap
+ifac ifam ifrr ifro ifmt ifms ifg ifgoiano ifb ifsc ifsul ifpr ifc cefet
+utfpr cp2 ufba ufrb
+
+resumo abstract introdução introducao metodologia conclusão conclusao
+referências referencias bibliografia keywords palavras chave autor autores
+et al vol edição edicao editora universidade faculdade tese dissertação
+dissertacao periódico periodico revista pag pp doi
+
+janeiro fevereiro março marco abril maio junho julho agosto setembro
+outubro novembro dezembro ano mês mes dia data horas hrs cpf cnpj cep rg
+local
+
+cid www http https br gov edu org com página pagina
+
+fazer fez fazem dever podem ter tendo haver houver promover promoverá
+promovera criar criado apresentar apresentado enviar através atraves
+"""
+
 STOPWORDS_PT: frozenset[str] = frozenset(
-    (_STOPWORDS_BASE + _STOPWORDS_EXPANDIDAS).split()
+    (_STOPWORDS_BASE + _STOPWORDS_EXPANDIDAS + _STOPWORDS_SOCIOINOVA).split()
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
