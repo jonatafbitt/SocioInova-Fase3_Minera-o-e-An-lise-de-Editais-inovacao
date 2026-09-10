@@ -17,7 +17,7 @@ from agente_editais.texto_analise import (
 class TestStopwordsVersao:
     def test_stopwords_versao_existe(self):
         assert isinstance(STOPWORDS_VERSAO, int)
-        assert STOPWORDS_VERSAO >= 3
+        assert STOPWORDS_VERSAO >= 4
 
     def test_conectivos_versao_existe(self):
         assert isinstance(CONECTIVOS_VERSAO, int)
@@ -98,14 +98,24 @@ class TestStopwordsSocioinova:
         "instituto", "federal", "campus", "campi", "reitoria",
         "reitor", "reitora", "diretora", "pró", "coordenadoria",
         "departamento", "ministério", "mec", "setec", "conif",
-        "ifba", "ifes", "ifrj", "ifsp", "ifpe", "ifrn", "ifce",
-        "ifpb", "ifal", "ifs", "ifpi", "ifma", "ifto", "ifpa",
-        "ifap", "ifac", "ifam", "ifrr", "ifro", "ifmt", "ifms",
-        "ifg", "ifgoiano", "ifb", "ifsc", "ifsul", "ifpr", "ifc",
-        "cefet", "utfpr", "cp2", "ufba", "ufrb",
+        "ifac", "ifal", "ifam", "ifap", "ifb", "ifba", "ifbaiano",
+        "ifc", "ifce", "ifes", "ifg", "ifgoiano", "ifma", "ifmg",
+        "ifms", "ifmt", "ifnmg", "ifpa", "ifpb", "ifpe", "ifpi",
+        "ifpr", "ifrj", "ifrn", "ifro", "ifrr", "ifrs", "ifs",
+        "ifsc", "ifsertao", "ifsertape", "ifsp", "ifsudestemg",
+        "ifsul", "ifsuldeminas", "ifto", "iftm", "cefet", "cefetmg",
+        "cefetrj", "utfpr", "cp2", "ufba", "ufrb",
     ])
     def test_institucional_siglas(self, inst):
         assert inst in STOPWORDS_PT
+
+    @pytest.mark.parametrize("sigla_faltante", [
+        "ifrs", "ifbaiano", "ifmg", "ifnmg", "ifsudestemg",
+        "ifsuldeminas", "ifsertao", "ifsertape", "iftm", "cefetmg",
+        "cefetrj",
+    ])
+    def test_siglas_rede_federal_nao_esquecidas(self, sigla_faltante):
+        assert sigla_faltante in STOPWORDS_PT
 
     @pytest.mark.parametrize("acad", [
         "resumo", "abstract", "introdução", "metodologia", "conclusão",

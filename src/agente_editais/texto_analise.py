@@ -23,7 +23,7 @@ TOKEN_PATTERN = r"(?u)\b[^\W\d_]\w+\b"
 # ──────────────────────────────────────────────────────────────────────────────
 # Versões (rastreabilidade — directive 404)
 # ──────────────────────────────────────────────────────────────────────────────
-STOPWORDS_VERSAO: int = 3
+STOPWORDS_VERSAO: int = 4
 CONECTIVOS_VERSAO: int = 1
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -101,10 +101,11 @@ minuta despacho considerando resolve estabelece certame constante
 disposto art
 
 instituto federal campus campi reitoria reitor reitora diretora pró pro
-coordenadoria departamento ministério ministerio mec setec conif ifba
-ifes ifrj ifsp ifpe ifrn ifce ifpb ifal ifs ifpi ifma ifto ifpa ifap
-ifac ifam ifrr ifro ifmt ifms ifg ifgoiano ifb ifsc ifsul ifpr ifc cefet
-utfpr cp2 ufba ufrb
+coordenadoria departamento ministério ministerio mec setec conif ifac
+ifal ifam ifap ifb ifba ifbaiano ifc ifce ifes ifg ifgoiano ifma ifmg
+ifms ifmt ifnmg ifpa ifpb ifpe ifpi ifpr ifrj ifrn ifro ifrr ifrs ifs
+ifsc ifsertao ifsertape ifsp ifsudestemg ifsul ifsuldeminas ifto iftm
+cefet cefetmg cefetrj utfpr cp2 ufba ufrb
 
 resumo abstract introdução introducao metodologia conclusão conclusao
 referências referencias bibliografia keywords palavras chave autor autores
