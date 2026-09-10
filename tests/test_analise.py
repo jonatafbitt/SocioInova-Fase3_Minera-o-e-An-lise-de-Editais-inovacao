@@ -390,7 +390,7 @@ def test_codificacao_feliz_grava_catalogo_e_lote_com_assinatura(
     assert len(lote["prompt_sha256"]) == 64
     assert lote["prompt_versao"]
     assert lote["versao_agente"]
-    assert lote["schema_version"] == 6
+    assert lote["schema_version"] == 10
     assert lote["status"] == "concluido"
 
     eventos = tipos_eventos(politeness_veloz.manifesto)
@@ -985,14 +985,21 @@ def test_validar_saida_recusa_violacoes_do_esquema(tmp_path):
 # -- Unidades do carregador de codebook -----------------------------------------------
 
 
-def test_carregar_codebook_repo_exemplo_tem_tres_gates_pendentes():
-    """Hermético: deriva do __file__ (como configs_reais_no_tmp), imune ao CWD."""
+def test_carregar_codebook_repo_quadro_real_congelado_sem_gates_pendentes():
+    """Hermético: deriva do __file__ (como configs_reais_no_tmp), imune ao CWD.
+
+    Após a Fase 1 do Plano (2026-09-09) o codebook traz o Quadro real
+    (1 campo por dimensão) congelado — nenhum gate pendente.
+    """
     codebook = carregar_codebook(CONFIGS_DO_REPO / "codebook.yaml")
-    pendentes = codebook.gates_pendentes()
-    assert len(pendentes) == 3
-    assert any("congelamento" in g for g in pendentes)
-    assert any("trietica_dahlin" in g for g in pendentes)
-    assert any("limiar_kappa" in g for g in pendentes)
+    assert codebook.gates_pendentes() == []
+    assert codebook.ids_de_campos() == [
+        "hierarquia_saberes",
+        "amplitude_redes",
+        "enquadramento_impacto",
+        "margem_manobra_governanca",
+        "sensibilidade_regional",
+    ]
 
 
 def test_codebook_congelado_nao_tem_gates_pendentes(tmp_path):

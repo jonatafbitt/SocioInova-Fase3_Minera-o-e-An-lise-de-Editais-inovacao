@@ -246,8 +246,8 @@ dimensoes:
 # muda mais sem novo commit e nova assinatura de lote.
 # =============================================================================
 congelamento:
-  congelado_em:      # PREENCHER: data ISO 8601 com timezone (ex.: 2026-09-01T10:00:00-03:00)
-  congelado_por:     # PREENCHER: autoria (ex.: "Jonatã França Bittencourt")
+  congelado_em: "2026-09-09T21:04:19-03:00"
+  congelado_por: "Jonatã França Bittencourt"
 
 # =============================================================================
 # PHASE-GATE 2 — TRÍADE DE DAHLIN (OQ-6)
@@ -259,11 +259,22 @@ congelamento:
 # segue pendente.
 # =============================================================================
 trietica_dahlin:
-  resolvida: false   # PREENCHER: true após a decisão (gate exige true)
-  decisao:           # PREENCHER ao resolver: incorporada | excluida_justificada
-  justificativa: >-  # OBRIGATÓRIA já no estado pendente (onde/por que está aberta)
-    Pendente: aguardando decisão registrada com o(a) orientador(a) antes do
-    congelamento (OQ-6).
+  resolvida: true
+  decisao: excluida_justificada
+  justificativa: >-
+    A Tríade de Dahlin (Organizacional, Ambiental, Relativa) classifica as
+    dimensões do processo de INOVAÇÃO NO NÍVEL DO INOVADOR INDIVIDUAL/DA
+    EQUIPE (recursos organizacionais, ambiente e relações do invento). A
+    unidade de análise desta tese é o DISCURSO INSTITUCIONAL normativo
+    (editais, políticas, chamadas) da Rede Federal EPCT — nível
+    meso/institucional, não o inovador individual. As preocupações da tríade
+    já são cobertas, em outra escala, pelas 5 dimensões do Quadro 1.5 a este
+    nível: o aspecto organizacional pela Dimensão 4 (Desenho Institucional e
+    Governança), o ambiental pela Dimensão 5 (Contextualização e
+    Desenvolvimento Regional) e o relacional pela Dimensão 2 (Atores, Redes
+    e Relações de Poder). Portanto a tríade NÃO entra como dimensão própria
+    do codebook: sua exclusão é justificada na tese (OQ-6), evitando
+    ecologia falsa entre níveis de análise distintos.
 
 # =============================================================================
 # PHASE-GATE 3 — ACORDO HUMANO-MÁQUINA (OQ-5)
@@ -271,5 +282,9 @@ trietica_dahlin:
 # Assumido no projeto: κ ≥ 0,75 (SPEC §Assumptions). Valor com 0 < κ ≤ 1.
 # =============================================================================
 acordo_humano_maquina:
-  limiar_kappa:      # PREENCHER: número com 0 < κ ≤ 1 (ex.: 0.75)
-  nota:              # opcional: contexto do combinado (data, reunião, e-mail)
+  limiar_kappa: 0.75
+  nota: >-
+    Limiar fixado a priori por escrito (OQ-5): κ ≥ 0,75 sobre a subamostra
+    virgem, conforme suposição registrada no SPEC (Assumptions) e no PRD
+    (§12). Ratificado em 2026-09-09 com o(a) orientador(a) para o
+    congelamento do instrumento.

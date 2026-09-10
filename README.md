@@ -227,10 +227,13 @@ Publicação no Portal consultando TODAS as fontes locais disponíveis:
 via provedor LLM isolado atrás do adaptador único (`llm_adapter.py` — AD-6;
 nenhum SDK, transporte OpenAI-compatível por `requests`).
 
-> ⚠️ **O CONTEÚDO CIENTÍFICO do codebook é do(a) pesquisador(a).** O arquivo
-> `configs/codebook.yaml` versionado traz apenas o ESQUEMA + um EXEMPLO
-> mínimo rotulado `EXEMPLO`. Antes do primeiro lote, substitua-o pelo Quadro
-> Conceitual-Analítico real da tese.
+> **Instrumento congelado em 2026-09-09** (Fase 1 do Plano de Aprimoramento):
+> `configs/codebook.yaml` traz o **Quadro Conceitual-Analítico real** da tese
+> — as 5 dimensões do Quadro 1.5 (Diretrizes Analíticas §1.3.5), cada uma
+> operacionalizada em 1 campo com âncoras/sinais do Quadro 1.6, e os três
+> phase-gates preenchidos (congelamento, Tríade de Dahlin resolvida por
+> exclusão justificada, κ = 0,75). A partir daqui, alterar o arquivo exige
+> novo commit e abre **novo instrumento** (novo hash ⇒ novo lote).
 
 #### Os três phase-gates (bloqueiam EM CÓDIGO — AD-6)
 
@@ -245,19 +248,23 @@ enquanto o codebook.yaml não tiver:
 
 A mensagem de erro nomeia QUAL gate está pendente.
 
-#### Como congelar (passo a passo)
+#### Congelamento (estado atual e regra de alteração)
 
-1. Substitua o conteúdo `EXEMPLO` de `dimensoes:` pelas dimensões/campos
-   reais do Quadro (cada campo: escala ordinal/nominal, definição
-   operacional, regra de decisão, N/A, âncoras positiva/negativa e regra de
-   boilerplate; ids em `[a-z0-9_]+`, únicos);
-2. Rode `uv run agente-editais analise --todos --modelo MODELO` para conferir
-   que os gates pendentes são os esperados (nada toca o provedor);
-3. Preencha os três blocos marcados "PREENCHER" (`congelamento`,
-   `trietica_dahlin`, `acordo_humano_maquina`);
-4. **Faça COMMIT no git** (AD-9): o hash SHA-256 do arquivo é registrado em
-   cada lote (`codebook_sha256`) — alterar o codebook muda o hash ⇒ novo
-   instrumento ⇒ novo lote.
+O instrumento está **congelado** (commit `85d5d56`/Fase 1 do Plano): o
+`dimensoes:` traz as dimensões/campos reais do Quadro (cada campo: escala
+ordinal/nominal, definição operacional, regra de decisão, N/A, âncoras
+positiva/negativa e regra de boilerplate; ids em `[a-z0-9_]+`, únicos) e os
+três blocos dos phase-gates estão preenchidos (`congelamento`,
+`trietica_dahlin`, `acordo_humano_maquina`).
+
+Alterar qualquer conteúdo científico ou de gate **é decisão humana
+registrada**: exige novo commit e reabre o instrumento — o hash SHA-256 do
+arquivo é registrado em cada lote (`codebook_sha256`); mudou o arquivo ⇒ novo
+instrumento ⇒ novo lote (AD-9). Para verificar o estado atual:
+
+```bash
+uv run agente-editais analise --todos --modelo MODELO   # recusa apenas por credenciais, se os gates estiverem ok
+```
 
 #### Instrumento congelado por lote (FR-18)
 
@@ -408,9 +415,9 @@ AGENTE_EDITAIS_CONFIGS=./configs-de-teste uv run agente-editais descobrir --port
   escaneado (`[texto] limiar_chars_por_pagina`, default 100) usado pelo
   extrator único.
 - `configs/codebook.yaml` — codebook do catálogo L2 + os três phase-gates
-  (CAP-7). Versionado em git; o hash do arquivo registra-se em cada lote —
-  alteração exige commit e abre novo instrumento (AD-9). O conteúdo
-  científico é do(a) pesquisador(a); o versionado traz só ESQUEMA + EXEMPLO.
+  (CAP-7): Quadro Conceitual-Analítico real congelado (2026-09-09).
+  Versionado em git; o hash do arquivo registra-se em cada lote — alteração
+  exige commit e abre novo instrumento (AD-9).
 - `dados/manifesto.sqlite3` — Manifesto (estado único; criado no primeiro
   comando que grava). **Fora do git**; backup = copiar pasta após
   `PRAGMA wal_checkpoint(TRUNCATE)`.
