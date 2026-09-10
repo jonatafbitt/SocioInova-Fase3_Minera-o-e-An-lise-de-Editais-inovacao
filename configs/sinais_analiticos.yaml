@@ -1,0 +1,80 @@
+# Sinais textuais derivados do Quadro 1.6 (Diretrizes Analíticas)
+# Cada dimensão lista termos-sinal para busca no corpus
+schema_version: 1
+
+dimensoes:
+  - id: fundamentos_epistemologicos
+    nome: "Fundamentos Epistemológicos da Política de Inovação"
+    sinais:
+      - "saberes tradicionais"
+      - "conhecimento local"
+      - "interculturalidade"
+      - "tecnologia social"
+      - "extensão tecnológica"
+      - "inovação social"
+      - "patente"
+      - "transferência de tecnologia"
+      - "licenciamento"
+      - "coprodução"
+      - "justiça epistêmica"
+
+  - id: atores_redes_poder
+    nome: "Atores, Redes e Relações de Poder"
+    sinais:
+      - "sociedade civil"
+      - "comunidade"
+      - "arranjo produtivo local"
+      - "economia solidária"
+      - "movimentos sociais"
+      - "empresa"
+      - "parceria"
+      - "rede de colaboração"
+      - "atores sociais"
+      - "ponto de passagem obrigatório"
+
+  - id: impacto_social
+    nome: "Relevância e Impacto Social"
+    sinais:
+      - "impacto social"
+      - "desenvolvimento regional"
+      - "demanda social"
+      - "território"
+      - "sustentabilidade"
+      - "bem-estar"
+      - "inclusão"
+      - "emancipação"
+      - "razão substantiva"
+      - "bem viver"
+
+  - id: governanca_institucional
+    nome: "Desenho Institucional e Governança"
+    sinais:
+      - "governança"
+      - "conselho"
+      - "comitê"
+      - "colegiado"
+      - "participação"
+      - "transparência"
+      - "autonomia"
+      - "orçamento"
+      - "planejamento"
+      - "racionalização"
+
+  - id: desenvolvimento_regional
+    nome: "Contextualização e Desenvolvimento Regional"
+    sinais:
+      - "vocação regional"
+      - "arranjos locais"
+      - "vulnerabilidade"
+      - "inserção regional"
+      - "desenvolvimento endógeno"
+      - "dependência"
+      - "especificidade local"
+      - "territorialidade"
+      - "ecossistema local"
+
+# Configuração da mineração de sinais
+mineracao:
+  janela_contexto: 50          # caracteres antes/depois do sinal para KWIC
+  normalizar: true             # lowercase + colapsar espaços
+  incluir_bigramas: true       # buscar também bigramas nos sinais

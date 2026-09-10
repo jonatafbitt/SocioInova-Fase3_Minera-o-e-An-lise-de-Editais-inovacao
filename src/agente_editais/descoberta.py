@@ -40,6 +40,16 @@ PALAVRAS_CHAVE_SECAO: tuple[str, ...] = (
     "PRPPG",
     "NIT",
     "Agência de Inovação",
+    "Incubação",
+    "Pré-incubação",
+    "Aceleração",
+    "Financiamento",
+    "Editais",
+    "Inscrições",
+    "Empreendedorismo",
+    "Startup",
+    "Negócio",
+    "Ideação",
 )
 
 _SLUGS_CANDIDATO = frozenset({"edital", "editais", "chamada", "chamadas"})
@@ -75,19 +85,21 @@ def classificar_link(texto_ancora: str, url: str) -> tuple[str, str] | None:
 
     Retorna ``('candidato', 'pdf'|'pagina_edital')``, ``('secao', '')`` ou
     ``None`` (link neutro — navegação institucional sem interesse). A ordem é
-    deliberada: PDF vence tudo; keyword de seção vence slug — um menu "Editais
-    de Inovação" apontando para listagem deve ser NAVEGADO, não arquivado.
+    deliberada: PDF vence tudo; slug-candidato vence keyword de seção — uma
+    âncora genérica ("Editais diversos") apontando para uma chamada concreta
+    (``/chamada-2024.html``) é CANDIDATA, não seção navegável; a keyword cobre
+    as listagens sem slug ("Editais de Inovação" → ``/inovacao`` = seção).
     Slugs casam por TOKEN do caminho com plurais ('editais', 'chamadas') —
     sem substring acidental ('contrachamada' não é chamada).
     """
     caminho = urlsplit(url).path.lower()
     if caminho.endswith(".pdf"):
         return ("candidato", "pdf")
-    if contem_palavra_chave(texto_ancora):
-        return ("secao", "")
     tokens = {token for token in _DIVISOR_TOKEN.split(caminho) if token}
     if tokens & _SLUGS_CANDIDATO:
         return ("candidato", "pagina_edital")
+    if contem_palavra_chave(texto_ancora):
+        return ("secao", "")
     return None
 
 
@@ -158,6 +170,7 @@ def navegar_portal(
     *,
     comando: str = "descobrir",
     sessao: requests.Session | None = None,
+    varredura_id: int | None = None,
 ) -> ResumoPortal:
     """BFS limitado por ``profundidade_maxima`` e ``max_paginas_por_portal``.
 
@@ -211,6 +224,7 @@ def navegar_portal(
             _decisao,
             comando,
             sessao,
+            varredura_id,
         )
     finally:
         if propria:
@@ -232,6 +246,7 @@ def _navegar(
     _decisao_robots,
     comando: str,
     sessao: requests.Session,
+    varredura_id: int | None = None,
 ) -> None:
     portal = contexto.portal
     host_portal = _host_escopo(hostname_de(portal.url))
@@ -413,7 +428,8 @@ def _navegar(
                 continue
 
             inserido = manifesto.registrar_candidato(
-                contexto.portal_id, destino, classe[1], texto_ancora=texto_ancora
+                contexto.portal_id, destino, classe[1],
+                texto_ancora=texto_ancora, varredura_id=varredura_id,
             )
             if inserido:
                 resumo.candidatos_novos += 1

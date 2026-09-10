@@ -239,8 +239,9 @@ def coletar_portal(
     comando: str = "coletar",
     sessao: requests.Session | None = None,
     hosts_suspensos_execucao: list[str] | None = None,
+    urls_restritas: set[str] | None = None,
 ) -> ResumoColetaPortal:
-    """Coleta todos os candidatos PDF de UM portal (lote idempotente, AD-1).
+    """Coleta os candidatos PDF de UM portal (lote idempotente, AD-1).
 
     Itera ``candidatos WHERE tipo='pdf'`` em ordem estável; cada documento
     concluído é uma transação própria — interrupção retoma exatamente dali.
@@ -248,7 +249,9 @@ def coletar_portal(
     ``hosts_suspensos_execucao`` é a lista COMPARTILHADA entre todos os
     portais da mesma execução (--todos) — candidatos de outros portais no
     mesmo hostname são pulados sem rede e CONTAM no relatório
-    (``puladas_host_suspenso`` + ``urls_perdidas``).
+    (``puladas_host_suspenso`` + ``urls_perdidas``). ``urls_restritas``
+    limita o lote a um recorte de URLs (ex.: ``--varredura``) — as contagens
+    do resumo refletem SOMENTE o recorte.
     """
     rotulo = {"instituicao": contexto.instituicao_sigla, "portal": contexto.portal.nome}
     resumo = ResumoColetaPortal(contexto.instituicao_sigla, contexto.portal.nome)
@@ -265,6 +268,8 @@ def coletar_portal(
 
     try:
         candidatos = manifesto.candidatos_pdf_do_portal(contexto.portal_id)
+        if urls_restritas is not None:
+            candidatos = [c for c in candidatos if c["url"] in urls_restritas]
         resumo.candidatos_pdf = len(candidatos)
         tmp_dir = Path(raiz_corpus) / _PASTA_TMP
         tmp_dir.mkdir(parents=True, exist_ok=True)

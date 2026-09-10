@@ -5,9 +5,9 @@ Governado por:
 - AD-8: identidade por URL normalizada (host lowercase, sem fragment/utm);
 - AD-4: este módulo NUNCA faz I/O de rede (o pré-voo vai VIA fetcher).
 
-Categorias são um conjunto fechado: {integra, nit, prpgi_prppg, agencia_inovacao}.
-Erros de validação saem como ``ErroMapa`` com mensagem acionável nomeando
-campo e linha no TOML.
+Categorias são um conjunto fechado: {integra, nit, prppg_inovacao,
+agencia_inovacao, extensao, ensino, reitoria}. Erros de validação saem como
+``ErroMapa`` com mensagem acionável nomeando campo e linha no TOML.
 """
 
 from __future__ import annotations
@@ -22,7 +22,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .manifest import Manifesto, agora_iso
 
-CATEGORIAS: tuple[str, ...] = ("integra", "nit", "prpgi_prppg", "agencia_inovacao")
+CATEGORIAS: tuple[str, ...] = (
+    "integra",
+    "prppg_inovacao",
+    "extensao",
+    "ensino",
+    "reitoria",
+    "nit",
+    "agencia_inovacao",
+)
 SCHEMA_VERSION_SUPORTADA = 1
 
 _RE_SIGLA = re.compile(r"[A-Za-z0-9-]{2,}")
@@ -247,6 +255,23 @@ def _linhas_formatadas(linhas: list[int]) -> str:
     return ", ".join(str(n) for n in linhas)
 
 
+_CATEGORIAS_LEGADAS: dict[str, str] = {"prpgi_prppg": "prppg_inovacao"}
+
+
+def _normalizar_categorias_legadas(mapa: MapaMestre) -> None:
+    """Mapeia categorias legadas (story 8) para o canônico, na CARGA.
+
+    Um mapa-mestre anterior à v7 do schema ainda declara ``prpgi_prppg``; aqui
+    ele é normalizado para ``prppg_inovacao`` antes das validações — a frota
+    atualiza o config sem quebrar ``mapa validar`` (mesmo banco migrado).
+    """
+    for instituicao in mapa.instituicao:
+        for portal in instituicao.portal:
+            novo = _CATEGORIAS_LEGADAS.get(portal.categoria)
+            if novo is not None:
+                portal.categoria = novo
+
+
 def carregar_mapa(caminho: Path) -> MapaMestre:
     """Carrega e valida ``mapa-mestre.toml``; levanta ``ErroMapa`` se inválido."""
     caminho = Path(caminho)
@@ -282,6 +307,7 @@ def carregar_mapa(caminho: Path) -> MapaMestre:
             )
         raise ErroMapa(problemas) from exc
 
+    _normalizar_categorias_legadas(mapa)
     _validacoes_semanticas(mapa, texto_bruto, caminho)
     return mapa
 

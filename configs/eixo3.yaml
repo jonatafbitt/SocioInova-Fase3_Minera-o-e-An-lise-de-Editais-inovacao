@@ -1,0 +1,79 @@
+# Classificação do Eixo 3 — Relevância e Impacto Social
+# Regras derivadas das instruções de codificação (Sociologia da Inovação)
+# O casamento de sinais segue a MESMA normalização da classificação principal:
+# - lowercase + remoção de acentos (NFD) + collapse de whitespace
+# - matching por token inteiro (\bpalavra\b) via regex compilado
+schema_version: 1
+
+regras:
+  instrumental:
+    codigo: "IMPACTO_INSTRUMENTAL"
+    descricao: "Critérios de avaliação pontuam EXCLUSIVAMENTE potencial de mercado e viabilidade financeira"
+    # Para ser INSTRUMENTAL, o texto DEVE conter AMBOS os sinais obrigatórios
+    # E NÃO DEVE conter NENHUM dos sinais vedados (substantivos)
+    sinais_obrigatorios:
+      - "potencial de mercado"
+      - "viabilidade financeira"
+    sinais_vedados:
+      - "tecnologia social"
+      - "tecnologias sociais"
+      - "comunidade vulneravel"
+      - "comunidades vulneraveis"
+      - "economia solidaria"
+      - "impacto social"
+      - "desenvolvimento regional"
+      - "demanda social"
+      - "sustentabilidade"
+      - "bem-estar"
+      - "inclusao"
+      - "emancipacao"
+      - "razao substantiva"
+      - "bem viver"
+      - "justica epistêmica"
+      - "coproducao"
+      - "saberes tradicionais"
+      - "conhecimento local"
+      - "interculturalidade"
+    operador: "TODOS_OBRIGATORIOS_E_NENHUM_VEDADO"
+
+  substantivo:
+    codigo: "IMPACTO_SUBSTANTIVO"
+    descricao: "Reserva cotas de pontuação ou bolsas específicas para tecnologias sociais, comunidades vulneráveis ou economia solidária"
+    # Gatilhos: termos que indicam reserva/cota/bolsa específica
+    sinais_gatilho:
+      - "cota"
+      - "cotas"
+      - "reserva de vaga"
+      - "reserva de vagas"
+      - "vaga reservada"
+      - "vagas reservadas"
+      - "bolsa especifica"
+      - "bolsas especificas"
+      - "pontuacao adicional"
+      - "pontuação adicional"
+      - "critério de desempate"
+      - "criterio de desempate"
+      - "prioridade"
+      - "prioritario"
+      - "prioritária"
+      - "prioritarios"
+      - "prioritarias"
+    # Alvos: para quem/quê a reserva se destina
+    sinais_alvo:
+      - "tecnologia social"
+      - "tecnologias sociais"
+      - "comunidade vulneravel"
+      - "comunidades vulneraveis"
+      - "economia solidaria"
+      - "publico vulneravel"
+      - "publicos vulneraveis"
+      - "grupo vulneravel"
+      - "grupos vulneraveis"
+    operador: "QUALQUER_GATILHO_COM_QUALQUER_ALVO"
+
+  silencio:
+    codigo: "AUSENTE_SILENCIAMENTO"
+    descricao: "Nenhum dos padrões acima encontrado no texto"
+
+# Janela de caracteres ao redor do match para extrair trecho probatório
+janela_comprobatoria: 120

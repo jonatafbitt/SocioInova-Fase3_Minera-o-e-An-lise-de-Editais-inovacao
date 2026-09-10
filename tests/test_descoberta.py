@@ -81,6 +81,12 @@ def test_contem_palavra_chave_insensivel_a_caixa_e_acento(texto, esperado) -> No
         ("Editais de Inovação", "http://x.org/inovacao", ("secao", "")),
         ("Pesquisa", "http://x.org/pesquisa", None),
         ("", "http://x.org/sobre/o-instituto", None),
+        # keywords adicionadas pela curadoria (working tree): seção, não slug
+        ("Financiamento de Pesquisa 2026", "http://x.org/financiamento", ("secao", "")),
+        ("Incubação de Startups", "http://x.org/incubacao", ("secao", "")),
+        ("Pré-incubação no campus", "http://x.org/preincubacao", ("secao", "")),
+        ("Empreendedorismo e Aceleração", "http://x.org/empreendedorismo", ("secao", "")),
+        ("Aberto às inscrições", "http://x.org/inscricoes", ("secao", "")),
     ],
 )
 def test_classificar_link_e_sintatico(texto_ancora, url, esperado) -> None:

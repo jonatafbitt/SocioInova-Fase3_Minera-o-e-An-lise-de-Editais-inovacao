@@ -459,8 +459,9 @@ def datar_portal(
     manifesto: Manifesto,
     *,
     comando: str = "datar",
+    urls_restritas: set[str] | None = None,
 ) -> ResumoDatacaoPortal:
-    """Data todos os Documentos de UM portal (lote idempotente, AD-1).
+    """Data os Documentos de UM portal (lote idempotente, AD-1).
 
     Itera ``documentos`` ligados ao portal em ordem estável; cada documento
     concluído é uma transação própria — interrupção retoma exatamente dali.
@@ -468,12 +469,15 @@ def datar_portal(
     termina COM ``metodo_datacao``+evidências OU com item ativo na fila —
     nenhum fica sem destino (AC da story), EXCETO o de leitura falhada
     (PDF sumido/corrompido): sem destino até o reparo, re-tentado na
-    próxima execução.
+    próxima execução. ``urls_restritas`` limita o lote a um recorte de URLs
+    (ex.: ``--varredura``) — as contagens do resumo refletem SOMENTE o recorte.
     """
     rotulo = {"instituicao": contexto.instituicao_sigla, "portal": contexto.portal.nome}
     resumo = ResumoDatacaoPortal(contexto.instituicao_sigla, contexto.portal.nome)
 
     documentos = manifesto.documentos_do_portal(contexto.portal_id)
+    if urls_restritas is not None:
+        documentos = [d for d in documentos if d["url_origem"] in urls_restritas]
     for documento in documentos:
         resumo.documentos += 1
         url = documento["url_origem"]

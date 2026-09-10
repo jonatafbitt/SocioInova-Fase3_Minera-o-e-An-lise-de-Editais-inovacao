@@ -1,8 +1,13 @@
 # Mapa-Mestre — cadastro curado do CAP-1 (AD-9: versionado em git; alteração exige commit).
-# Estrutura: instituicao[] → portal[] → categoria ∈ {integra, nit, prpgi_prppg, agencia_inovacao} → seeds[]
+# Estrutura: instituicao[] → portal[] → categoria ∈ {integra, prppg_inovacao, extensao,
+# ensino, reitoria, nit, agencia_inovacao} → seeds[]
 # Seeds da ideação (PRD §4.1 / story 1, Code Map). O crawl recusa qualquer portal fora deste cadastro.
 
 schema_version = 1
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INSTITUIÇÕES ORIGINAIS (10)
+# ═══════════════════════════════════════════════════════════════════════════
 
 [[instituicao]]
 sigla = "IFBA"
@@ -17,7 +22,7 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia da Bahia"
 
   [[instituicao.portal]]
   nome = "PRPGI IFBA"
-  categoria = "prpgi_prppg"
+  categoria = "prppg_inovacao"
   url = "https://portal.ifba.edu.br/prpgi"
   seeds = ["https://portal.ifba.edu.br/prpgi"]
 
@@ -76,7 +81,7 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia do Maranhão"
 
   [[instituicao.portal]]
   nome = "PRPGI IFMA"
-  categoria = "prpgi_prppg"
+  categoria = "prppg_inovacao"
   url = "https://prpgi.ifma.edu.br"
   seeds = ["https://prpgi.ifma.edu.br"]
 
@@ -86,7 +91,7 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia do Pará"
 
   [[instituicao.portal]]
   nome = "PROPPG IFPA"
-  categoria = "prpgi_prppg"
+  categoria = "prppg_inovacao"
   url = "https://proppg.ifpa.edu.br"
   seeds = ["https://proppg.ifpa.edu.br"]
 
@@ -119,3 +124,327 @@ nome = "Instituto Federal de Educação, Ciência e Tecnologia de Roraima"
   categoria = "agencia_inovacao"
   url = "https://www.ifrr.edu.br/a-instituicao/pesquisa/agif/"
   seeds = ["https://www.ifrr.edu.br/a-instituicao/pesquisa/agif/"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INSTITUIÇÕES ADICIONADAS — pesquisa de URLs (ago/2026)
+# ═══════════════════════════════════════════════════════════════════════════
+
+[[instituicao]]
+sigla = "IFAC"
+nome = "Instituto Federal do Acre"
+
+  [[instituicao.portal]]
+  nome = "Editais IFAC"
+  categoria = "prppg_inovacao"
+  url = "https://editais.ifac.edu.br"
+  seeds = ["https://editais.ifac.edu.br"]
+
+[[instituicao]]
+sigla = "IFAL"
+nome = "Instituto Federal de Alagoas"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa e Inovação IFAL"
+  categoria = "prppg_inovacao"
+  url = "https://www2.ifal.edu.br/o-ifal/pesquisa-pos-graduacao-e-inovacao/editais"
+  seeds = ["https://www2.ifal.edu.br/o-ifal/pesquisa-pos-graduacao-e-inovacao/editais"]
+
+[[instituicao]]
+sigla = "IFAP"
+nome = "Instituto Federal do Amapá"
+
+  [[instituicao.portal]]
+  nome = "Propesq IFAP"
+  categoria = "prppg_inovacao"
+  url = "https://ifap.edu.br/index.php/publicacoes/itemlist/category/39-documentos-propesq"
+  seeds = ["https://ifap.edu.br/index.php/publicacoes/itemlist/category/39-documentos-propesq"]
+
+[[instituicao]]
+sigla = "IFAM"
+nome = "Instituto Federal do Amazonas"
+
+  [[instituicao.portal]]
+  nome = "PPGI IFAM"
+  categoria = "prppg_inovacao"
+  url = "https://www2.ifam.edu.br/pro-reitorias/pesquisa-e-inovacao/ppgi/editais/pesquisa"
+  seeds = ["https://www2.ifam.edu.br/pro-reitorias/pesquisa-e-inovacao/ppgi/editais/pesquisa"]
+
+[[instituicao]]
+sigla = "IFBAIANO"
+nome = "Instituto Federal do Bahia"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa IFBAIANO"
+  categoria = "prppg_inovacao"
+  url = "https://ifbaiano.edu.br/portal/pesquisa/todos-os-editais/"
+  seeds = ["https://ifbaiano.edu.br/portal/pesquisa/todos-os-editais/"]
+
+[[instituicao]]
+sigla = "IFB"
+nome = "Instituto Federal de Brasília"
+
+  [[instituicao.portal]]
+  nome = "Editais IFB"
+  categoria = "prppg_inovacao"
+  url = "https://www.ifb.edu.br"
+  seeds = ["https://www.ifb.edu.br"]
+
+[[instituicao]]
+sigla = "IFCE"
+nome = "Instituto Federal do Ceará"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa e Inovação IFCE"
+  categoria = "prppg_inovacao"
+  url = "https://portal.ifce.edu.br/institucional/pesquisa-pos-graduacao-e-inovacao/editais/"
+  seeds = ["https://portal.ifce.edu.br/institucional/pesquisa-pos-graduacao-e-inovacao/editais/"]
+
+[[instituicao]]
+sigla = "IFG"
+nome = "Instituto Federal de Goiás"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa e Inovação IFG"
+  categoria = "prppg_inovacao"
+  url = "https://ifg.edu.br/editais-pesquisa-e-pos-graduacao/pesquisa-inovacao-em-andamento"
+  seeds = ["https://ifg.edu.br/editais-pesquisa-e-pos-graduacao/pesquisa-inovacao-em-andamento"]
+
+[[instituicao]]
+sigla = "IFGOIANO"
+nome = "Instituto Federal Goiano"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa IFGOIANO"
+  categoria = "prppg_inovacao"
+  url = "https://ifgoiano.edu.br/home/index.php/editais-pesquisa.html"
+  seeds = ["https://ifgoiano.edu.br/home/index.php/editais-pesquisa.html"]
+
+[[instituicao]]
+sigla = "IFMT"
+nome = "Instituto Federal de Mato Grosso"
+
+  [[instituicao.portal]]
+  nome = "Editais IFMT"
+  categoria = "prppg_inovacao"
+  url = "https://portal.ifmt.edu.br"
+  seeds = ["https://portal.ifmt.edu.br"]
+
+[[instituicao]]
+sigla = "IFMG"
+nome = "Instituto Federal de Minas Gerais"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa e Pós-Graduação IFMG"
+  categoria = "prppg_inovacao"
+  url = "https://www2.ifmg.edu.br/portal/pesquisa-e-pos-graduacao/editais-abertos/"
+  seeds = ["https://www2.ifmg.edu.br/portal/pesquisa-e-pos-graduacao/editais-abertos/"]
+
+[[instituicao]]
+sigla = "IFNMG"
+nome = "Instituto Federal do Norte de Minas Gerais"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa IFNMG"
+  categoria = "prppg_inovacao"
+  url = "https://ifnmg.edu.br/coordenacao-de-pesquisa-port/editais"
+  seeds = ["https://ifnmg.edu.br/coordenacao-de-pesquisa-port/editais"]
+
+[[instituicao]]
+sigla = "CEFET-MG"
+nome = "Centro Federal de Educação Tecnológica de Minas Gerais"
+
+  [[instituicao.portal]]
+  nome = "DIPPG CEFET-MG"
+  categoria = "prppg_inovacao"
+  url = "https://www.dedc.cefetmg.br/editais/"
+  seeds = ["https://www.dedc.cefetmg.br/editais/"]
+
+[[instituicao]]
+sigla = "IFSUDESTEMG"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia Sudeste de Minas Gerais"
+
+  [[instituicao.portal]]
+  nome = "Editais IFSUDESTEMG"
+  categoria = "prppg_inovacao"
+  url = "https://www.ifsudestemg.edu.br/editais"
+  seeds = ["https://www.ifsudestemg.edu.br/editais"]
+
+[[instituicao]]
+sigla = "IFSULDEMINAS"
+nome = "Instituto Federal de Educação, Ciência e Tecnologia do Sul de Minas Gerais"
+
+  [[instituicao.portal]]
+  nome = "Editais IFSULDEMINAS"
+  categoria = "prppg_inovacao"
+  url = "http://portal.ifsuldeminas.edu.br/index.php/pro-reitoria-pesquisa-pos-graduacao-inovacao/editais-pppi"
+  seeds = ["http://portal.ifsuldeminas.edu.br/index.php/pro-reitoria-pesquisa-pos-graduacao-inovacao/editais-pppi"]
+
+[[instituicao]]
+sigla = "IFTM"
+nome = "Instituto Federal do Triângulo Mineiro"
+
+  [[instituicao.portal]]
+  nome = "Editais IFTM"
+  categoria = "prppg_inovacao"
+  url = "https://iftm.edu.br/editais/"
+  seeds = ["https://iftm.edu.br/editais/"]
+
+[[instituicao]]
+sigla = "IFPB"
+nome = "Instituto Federal da Paraíba"
+
+  [[instituicao.portal]]
+  nome = "PRPIPG IFPB"
+  categoria = "prppg_inovacao"
+  url = "https://portalv1.ifpb.edu.br/prpipg/editais"
+  seeds = ["https://portalv1.ifpb.edu.br/prpipg/editais"]
+
+[[instituicao]]
+sigla = "UTFPR"
+nome = "Universidade Tecnológica Federal do Paraná"
+
+  [[instituicao.portal]]
+  nome = "Editais UTFPR"
+  categoria = "prppg_inovacao"
+  url = "https://www.utfpr.edu.br/editais/pesquisa-e-pos-graduacao"
+  seeds = ["https://www.utfpr.edu.br/editais/pesquisa-e-pos-graduacao"]
+
+[[instituicao]]
+sigla = "IFPE"
+nome = "Instituto Federal de Pernambuco"
+
+  [[instituicao.portal]]
+  nome = "Propesq IFPE"
+  categoria = "prppg_inovacao"
+  url = "https://portal.ifpe.edu.br/o-ifpe/pesquisa-pos-graduacao-e-inovacao/pesquisa-pos-e-inovacao-editais/"
+  seeds = ["https://portal.ifpe.edu.br/o-ifpe/pesquisa-pos-graduacao-e-inovacao/pesquisa-pos-e-inovacao-editais/"]
+
+[[instituicao]]
+sigla = "IFSERTAOPE"
+nome = "Instituto Federal do Sertão Pernambucano"
+
+  [[instituicao.portal]]
+  nome = "Editais IFSertãoPE"
+  categoria = "prppg_inovacao"
+  url = "https://ifsertaope.edu.br/editais/categorias/pesquisa-e-inovacao/"
+  seeds = ["https://ifsertaope.edu.br/editais/categorias/pesquisa-e-inovacao/"]
+
+[[instituicao]]
+sigla = "IFPI"
+nome = "Instituto Federal do Piauí"
+
+  [[instituicao.portal]]
+  nome = "PROPI IFPI"
+  categoria = "prppg_inovacao"
+  url = "https://www.ifpi.edu.br/a-instituicao/pro-reitorias/pesquisa-pos-graduacao-inovacao"
+  seeds = ["https://www.ifpi.edu.br/a-instituicao/pro-reitorias/pesquisa-pos-graduacao-inovacao"]
+
+[[instituicao]]
+sigla = "CEFET-RJ"
+nome = "Centro Federal de Educação Tecnológica Celso Suckow da Fonseca"
+
+  [[instituicao.portal]]
+  nome = "Editais CEFET-RJ"
+  categoria = "prppg_inovacao"
+  url = "https://www.cefet-rj.br/index.php/editais"
+  seeds = ["https://www.cefet-rj.br/index.php/editais"]
+
+[[instituicao]]
+sigla = "IFFLUMINENSE"
+nome = "Instituto Federal Fluminense"
+
+  [[instituicao.portal]]
+  nome = "Portal de Seleções IFF"
+  categoria = "extensao"
+  url = "https://selecoes.iff.edu.br/programas-e-projetos-institucionais/programas-e-projetos-de-extensao-e-pesquisa"
+  seeds = ["https://selecoes.iff.edu.br/programas-e-projetos-institucionais/programas-e-projetos-de-extensao-e-pesquisa"]
+
+[[instituicao]]
+sigla = "PEDRO-II"
+nome = "Colégio Pedro II"
+
+  [[instituicao.portal]]
+  nome = "PROPGPEC Pedro II"
+  categoria = "prppg_inovacao"
+  url = "https://www.cp2.g12.br"
+  seeds = ["https://www.cp2.g12.br"]
+
+[[instituicao]]
+sigla = "IFRN"
+nome = "Instituto Federal do Rio Grande do Norte"
+
+  [[instituicao.portal]]
+  nome = "PROPI IFRN"
+  categoria = "prppg_inovacao"
+  url = "https://portal.ifrn.edu.br/institucional/pesquisa-pos-graduacao-e-inovacao/editais-e-chamadas-publicas/"
+  seeds = ["https://portal.ifrn.edu.br/institucional/pesquisa-pos-graduacao-e-inovacao/editais-e-chamadas-publicas/"]
+
+[[instituicao]]
+sigla = "IFRS"
+nome = "Instituto Federal do Rio Grande do Sul"
+
+  [[instituicao.portal]]
+  nome = "Editais IFRS"
+  categoria = "prppg_inovacao"
+  url = "https://ifrs.edu.br/editais/"
+  seeds = ["https://ifrs.edu.br/editais/"]
+
+[[instituicao]]
+sigla = "IFSUL"
+nome = "Instituto Federal Sul-rio-grandense"
+
+  [[instituicao.portal]]
+  nome = "PROPESP IFSUL"
+  categoria = "prppg_inovacao"
+  url = "https://ifsul.edu.br/auxilio-pesquisadores"
+  seeds = ["https://ifsul.edu.br/auxilio-pesquisadores"]
+
+[[instituicao]]
+sigla = "IFFar"
+nome = "Instituto Federal Farroupilha"
+
+  [[instituicao.portal]]
+  nome = "Editais IFFar"
+  categoria = "prppg_inovacao"
+  url = "https://www.iffarroupilha.edu.br/editais"
+  seeds = ["https://www.iffarroupilha.edu.br/editais"]
+
+[[instituicao]]
+sigla = "IFRO"
+nome = "Instituto Federal de Rondônia"
+
+  [[instituicao.portal]]
+  nome = "Pesquisa IFRO"
+  categoria = "prppg_inovacao"
+  url = "https://portal.ifro.edu.br/portal-ifro/457-editais/pesquisa"
+  seeds = ["https://portal.ifro.edu.br/portal-ifro/457-editais/pesquisa"]
+
+[[instituicao]]
+sigla = "IFSC"
+nome = "Instituto Federal de Santa Catarina"
+
+  [[instituicao.portal]]
+  nome = "PROPPI IFSC"
+  categoria = "prppg_inovacao"
+  url = "https://www.ifsc.edu.br/web/portal-do-servidor/oportunidades/pesquisa"
+  seeds = ["https://www.ifsc.edu.br/web/portal-do-servidor/oportunidades/pesquisa"]
+
+[[instituicao]]
+sigla = "IFS"
+nome = "Instituto Federal de Sergipe"
+
+  [[instituicao.portal]]
+  nome = "PROPEX IFS"
+  categoria = "prppg_inovacao"
+  url = "https://www.ifs.edu.br/editais-propex"
+  seeds = ["https://www.ifs.edu.br/editais-propex"]
+
+[[instituicao]]
+sigla = "IFTO"
+nome = "Instituto Federal do Tocantins"
+
+  [[instituicao.portal]]
+  nome = "PROPI IFTO"
+  categoria = "prppg_inovacao"
+  url = "https://www.ifto.edu.br/ifto/reitoria/pro-reitorias/propi/editais"
+  seeds = ["https://www.ifto.edu.br/ifto/reitoria/pro-reitorias/propi/editais"]

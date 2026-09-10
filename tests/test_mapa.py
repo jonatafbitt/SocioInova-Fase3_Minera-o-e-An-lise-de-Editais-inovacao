@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -16,7 +17,7 @@ from .conftest import CONFIGS_DO_REPO, escrever_mapa, mapa_minimo
 # -- mapa válido -------------------------------------------------------------
 
 
-def test_mapa_shipado_e_valido_cobrindo_as_quatro_categorias() -> None:
+def test_mapa_shipado_e_valido_cobrindo_as_cinco_categorias() -> None:
     mapa = carregar_mapa(CONFIGS_DO_REPO / "mapa-mestre.toml")
 
     # mínimos, não exatos: curadoria pode adicionar IFs sem editar este teste
@@ -26,10 +27,39 @@ def test_mapa_shipado_e_valido_cobrindo_as_quatro_categorias() -> None:
     assert all(portal.seeds for portal in portais)
 
     categorias_presentes = {portal.categoria for portal in portais}
-    assert categorias_presentes == {"integra", "nit", "prpgi_prppg", "agencia_inovacao"}
+    assert categorias_presentes == {"integra", "nit", "prppg_inovacao", "agencia_inovacao", "extensao"}
 
     seeds = {seed for _, _, seed in mapa.seeds_unicas()}
     assert len(seeds) == sum(len(portal.seeds) for portal in portais)
+
+
+def test_mapa_normaliza_categoria_legada_prpgi_prppg() -> None:
+    """Categoria legada 'prpgi_prppg' deve ser remapada para 'prppg_inovacao'.
+
+    Esta normalização roda ANTES das validações semânticas (mapa.py:310 → 311),
+    então o pydantic só vê a categoria canônica.
+    """
+    toml_com_legada = """
+[[instituicao]]
+sigla = "IFXX"
+nome = "Instituto Federal X"
+
+[[instituicao.portal]]
+nome = "PRPGI-PRPPG"
+categoria = "prpgi_prppg"
+url = "https://ifxx.edu.br/prpgi"
+seeds = ["https://ifxx.edu.br/prpgi/editais"]
+""".strip()
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False, encoding="utf-8") as f:
+        f.write(toml_com_legada)
+        caminho = Path(f.name)
+    try:
+        mapa = carregar_mapa(caminho)
+        categorias = {portal.categoria for inst in mapa.instituicao for portal in inst.portal}
+        assert categorias == {"prppg_inovacao"}
+    finally:
+        caminho.unlink(missing_ok=True)
 
 
 def test_cli_mapa_validar_exit0_lista_completa_e_registra_eventos(
@@ -41,7 +71,7 @@ def test_cli_mapa_validar_exit0_lista_completa_e_registra_eventos(
     saida = resultado.output + (resultado.stderr or "")
     for sigla in ("IFBA", "IFSP", "IFMS", "IFRJ", "IFC", "IFMA", "IFPA", "IFES", "IFPR", "IFRR"):
         assert sigla in saida
-    for categoria in ("integra", "nit", "prpgi_prppg", "agencia_inovacao"):
+    for categoria in ("integra", "nit", "prppg_inovacao", "agencia_inovacao", "extensao"):
         assert f"[{categoria}]" in saida
     assert re.search(r"\d+ instituições, \d+ portais, \d+ seeds", saida)
     # URL corrigida pela curadoria do pré-voo real (commit 38a1b36)
